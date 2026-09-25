@@ -7,7 +7,7 @@ Releases are cut by pushing a [semver](https://semver.org) tag. The
 2. Rejects the tag unless it matches `vMAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]`.
 3. Runs `make dist`, which cross-compiles `sb` for darwin, linux and windows on
    amd64 and arm64 with `main.version` set to the tag, then writes
-   `checksums.txt` (SHA-256).
+   `SHA256SUMS` (SHA-256), which [install.sh](../install/install.sh) checks.
 4. Publishes signed build provenance for every archive (GitHub artifact attestations).
    This step is skipped while the repository is private, because GitHub does not offer
    attestations for user-owned private repositories.
@@ -27,7 +27,7 @@ Build the same archives locally with `make dist VERSION=v0.1.0`.
 Verify a downloaded archive:
 
 ```bash
-shasum -a 256 -c checksums.txt --ignore-missing
+shasum -a 256 -c SHA256SUMS --ignore-missing
 gh attestation verify sb_0.1.0_darwin_arm64.tar.gz --repo nanaaikinson/switchboard
 ```
 

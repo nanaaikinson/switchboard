@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"strings"
 	"testing"
 )
@@ -11,10 +10,9 @@ func TestCommands(t *testing.T) {
 	tests := []struct {
 		name    string
 		args    []string
-		wantErr error
 		errText string
 	}{
-		{name: "doctor", args: []string{"doctor"}, wantErr: errNotImplemented},
+		{name: "doctor extra arg", args: []string{"doctor", "x"}, errText: "unknown command"},
 		{name: "add missing port", args: []string{"add", "myapp"}, errText: "accepts 2 arg(s)"},
 		{name: "add non-numeric port", args: []string{"add", "myapp", "http"}, errText: "is not a number"},
 		{name: "daemon extra arg", args: []string{"daemon", "x"}, errText: "unknown command"},
@@ -32,14 +30,6 @@ func TestCommands(t *testing.T) {
 			err := root.Execute()
 			if err == nil {
 				t.Fatal("expected error")
-			}
-			if tt.wantErr != nil {
-				if !errors.Is(err, tt.wantErr) {
-					t.Fatalf("err = %v, want %v", err, tt.wantErr)
-				}
-				if want := tt.args[0] + ": not implemented yet"; err.Error() != want {
-					t.Errorf("err = %q, want %q", err, want)
-				}
 			}
 			if tt.errText != "" && !strings.Contains(err.Error(), tt.errText) {
 				t.Errorf("err = %q, want containing %q", err, tt.errText)

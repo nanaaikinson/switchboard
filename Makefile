@@ -1,4 +1,4 @@
-.PHONY: all build test test-integration lint vuln dist clean
+.PHONY: all build test test-integration lint lint-sh vuln dist clean
 
 BIN       := sb
 VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -19,6 +19,9 @@ test-integration:
 lint:
 	golangci-lint run
 
+lint-sh:
+	shellcheck --shell=sh --severity=style install/install.sh
+
 vuln:
 	govulncheck ./...
 
@@ -35,7 +38,7 @@ dist:
 		else tar -C dist -czf dist/$$name.tar.gz $$name; fi; \
 		rm -rf dist/$$name; \
 	done
-	cd dist && shasum -a 256 *.tar.gz *.zip > checksums.txt
+	cd dist && shasum -a 256 *.tar.gz *.zip > SHA256SUMS
 
 clean:
 	rm -rf $(BIN) dist

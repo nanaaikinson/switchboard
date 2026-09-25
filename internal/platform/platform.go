@@ -33,6 +33,17 @@ type Platform interface {
 	// listening sockets to the user's daemon. HelperListeners is the daemon side.
 	ServeHelper(ctx context.Context) error
 	HelperListeners(ctx context.Context) ([]net.Listener, error)
+
+	// Diagnostics for 'sb doctor', run as the user. Failures may implement
+	// interface{ Fix() string } with a one-line fix. Unsupported checks
+	// return an error matching errors.ErrUnsupported.
+	HelperRunning(ctx context.Context) error
+	CheckResolver(tld string, port int) error
+	// LookupHost resolves host through the system resolver, as apps do.
+	LookupHost(ctx context.Context, host string) ([]string, error)
+	// PortOwner names the process listening on a TCP port, or "" if none is
+	// visible to this user.
+	PortOwner(ctx context.Context, port int) (string, error)
 }
 
 // Options identifies the user Switchboard is installed for.

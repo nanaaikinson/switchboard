@@ -6,8 +6,14 @@ import (
 	"net"
 )
 
-// ErrUnsupported is returned by system setup, which is macOS-only so far.
-var ErrUnsupported = errors.New("system setup is not implemented on windows yet")
+// ErrUnsupported is returned by system setup, which is macOS-only so far. It
+// matches errors.ErrUnsupported.
+var ErrUnsupported error = unsupportedError{}
+
+type unsupportedError struct{}
+
+func (unsupportedError) Error() string        { return "system setup is not implemented on windows yet" }
+func (unsupportedError) Is(target error) bool { return target == errors.ErrUnsupported }
 
 // Validate reports that setup is unsupported.
 func (Platform) Validate() error { return ErrUnsupported }
@@ -35,3 +41,15 @@ func (Platform) ServeHelper(context.Context) error { return ErrUnsupported }
 
 // HelperListeners is unsupported; the daemon binds ports itself.
 func (Platform) HelperListeners(context.Context) ([]net.Listener, error) { return nil, ErrUnsupported }
+
+// HelperRunning is unsupported.
+func (Platform) HelperRunning(context.Context) error { return ErrUnsupported }
+
+// CheckResolver is unsupported.
+func (Platform) CheckResolver(string, int) error { return ErrUnsupported }
+
+// LookupHost is unsupported.
+func (Platform) LookupHost(context.Context, string) ([]string, error) { return nil, ErrUnsupported }
+
+// PortOwner is unsupported.
+func (Platform) PortOwner(context.Context, int) (string, error) { return "", ErrUnsupported }

@@ -3,7 +3,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
@@ -12,8 +11,6 @@ import (
 
 // version is set at build time with -ldflags "-X main.version=v1.2.3".
 var version = "dev"
-
-var errNotImplemented = errors.New("not implemented yet")
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
@@ -41,21 +38,9 @@ Run 'sb setup' once, then 'sb add <name> <port>' for each app.`,
 		newRmCmd(),
 		newLsCmd(),
 		newOpenCmd(),
-		stub(&cobra.Command{
-			Use:   "doctor",
-			Short: "Diagnose DNS, ports, certificates and conflicting tools",
-			Args:  cobra.NoArgs,
-		}),
+		newDoctorCmd(),
 		newSetupCmd(),
 		newUninstallCmd(),
 	)
 	return root
-}
-
-// stub gives cmd a RunE that reports the command is not implemented.
-func stub(cmd *cobra.Command) *cobra.Command {
-	cmd.RunE = func(c *cobra.Command, _ []string) error {
-		return fmt.Errorf("%s: %w", c.Name(), errNotImplemented)
-	}
-	return cmd
 }

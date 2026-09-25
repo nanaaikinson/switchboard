@@ -62,6 +62,27 @@ Unless `--http-addr` is given, `sb daemon` asks the helper for the listeners. If
 helper isn't there, it binds `--http-addr` (default `127.0.0.1:80,[::1]:80`) itself,
 and reports any bind error in `sb ls`.
 
+## Diagnosing problems: `sb doctor`
+
+`sb doctor` checks every part of the setup without changing anything, prints one
+`[PASS]`, `[FAIL]` or `[SKIP]` line per check, and a one-line `fix:` under each failure.
+It exits with status 1 if any check fails.
+
+| Check | Passes when | Typical fix |
+| --- | --- | --- |
+| `daemon` | the control socket answers `GET /v1/status` | re-run `sb setup`, or run `sb daemon` in a terminal to see why it stops |
+| `helper` | `/var/run/switchboard/helper.sock` accepts a connection (doctor connects and hangs up) | `sb setup` |
+| `resolver .<tld>` | `/etc/resolver/<tld>` is Switchboard's file and names the daemon's DNS port | `sb setup`; if another tool wrote it, remove that file or tool first |
+| `probe.<tld>` | `dscacheutil -q host -a name probe.<tld>` returns 127.0.0.1 | fix the checks above, or flush the DNS cache |
+| `port 80`, `port 443` | the daemon's proxy serves the port, or the port is free and the proxy doesn't use it | stop the process named in the failure |
+| one line per route | the route's upstream `127.0.0.1:<port>` accepts a TCP connection | start the app, or `sb add <name> <port>` |
+
+Port holders are found with `lsof`, which can't see root-owned processes without sudo.
+If a port is busy and `lsof` can't name the holder, doctor says so and prints the
+`sudo lsof` command to run yourself. While the daemon is down, route checks read the
+config file instead, and a busy port fails only if its holder can be named, because the
+helper keeps port 80 open between daemon restarts.
+
 ## Manual test checklist (macOS VM only)
 
 Never run these on your main machine. Use a VM (UTM, Parallels, or a cloud Mac), take a
@@ -109,7 +130,8 @@ SSH, so that `gui/<uid>` exists.
     ```
     The socket should be `srw-------` and owned by you. Port 80 should be held by both
     `dev.switchboard.helper` (root) and `sb` (you).
-12. `sb ls` should print no warnings about DNS or the proxy.
+12. `sb ls` should print no warnings about DNS or the proxy, and `sb doctor` should end
+    with "All 7 checks passed." (port 443 passes as free until HTTPS lands).
 
 **Routing**
 13. Start an app with `python3 -m http.server 3000 &`, then `sb add myapp 3000`.
@@ -142,7 +164,8 @@ SSH, so that `gui/<uid>` exists.
     printf 'nameserver 127.0.0.1\nport 1053\n' | sudo tee /etc/resolver/test
     ```
     `sb setup` should now fail with "not written by Switchboard", leaving the file
-    unchanged. `sb uninstall` should warn "left /etc/resolver/test in place" and keep
+    unchanged. `sb doctor` should report `[FAIL] resolver .test: ... written by another
+    tool (nameserver 127.0.0.1 port 1053)` and exit 1. `sb uninstall` should warn "left /etc/resolver/test in place" and keep
     the file. Then run `sudo rm /etc/resolver/test`.
 
 **Uninstall**

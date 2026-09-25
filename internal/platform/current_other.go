@@ -9,7 +9,12 @@ import (
 	"runtime"
 )
 
-var errUnsupported = errors.New("not supported on " + runtime.GOOS)
+var errUnsupported error = unsupportedError{}
+
+type unsupportedError struct{}
+
+func (unsupportedError) Error() string        { return "not supported on " + runtime.GOOS }
+func (unsupportedError) Is(target error) bool { return target == errors.ErrUnsupported }
 
 type unsupported struct{}
 
@@ -25,6 +30,12 @@ func (unsupported) ServeHelper(context.Context) error { return errUnsupported }
 func (unsupported) HelperListeners(context.Context) ([]net.Listener, error) {
 	return nil, errUnsupported
 }
+func (unsupported) HelperRunning(context.Context) error { return errUnsupported }
+func (unsupported) CheckResolver(string, int) error     { return errUnsupported }
+func (unsupported) LookupHost(context.Context, string) ([]string, error) {
+	return nil, errUnsupported
+}
+func (unsupported) PortOwner(context.Context, int) (string, error) { return "", errUnsupported }
 
 // New returns a platform whose system features all report unsupported.
 func New(Options) Platform { return unsupported{} }
