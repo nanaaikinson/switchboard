@@ -63,6 +63,21 @@ func Handler(s *Service) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, gone)
 	})
+	mux.HandleFunc("POST /v1/apply", func(w http.ResponseWriter, r *http.Request) {
+		var req ApplyRequest
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("decode apply request: %w", err))
+			return
+		}
+		res, err := s.Apply(req)
+		if err != nil {
+			writeError(w, statusFor(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
+	})
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, s.Status())
 	})

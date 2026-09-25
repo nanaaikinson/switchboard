@@ -14,7 +14,8 @@ const (
 
 // Route sources.
 const (
-	SourceConfig = "config" // routes.toml, managed with sb add and sb rm
+	SourceConfig = "config" // added with sb add
+	SourceFile   = "file"   // applied from the switchboard.toml named in the route's "file"
 	SourceDocker = "docker" // a running container; never persisted
 )
 
@@ -22,7 +23,7 @@ const (
 type RouteStatus struct {
 	config.Route
 	Health    Health `json:"health"`
-	Source    string `json:"source"`              // SourceConfig or SourceDocker
+	Source    string `json:"source"`              // SourceConfig, SourceFile or SourceDocker
 	Container string `json:"container,omitempty"` // for SourceDocker
 }
 
@@ -83,4 +84,26 @@ type Event struct {
 // Error is the body of every non-2xx response.
 type Error struct {
 	Error string `json:"error"`
+}
+
+// ApplyRequest is the body of POST /v1/apply: the complete set of routes from
+// one project file. An empty Routes removes all of that file's routes.
+type ApplyRequest struct {
+	File   string         `json:"file"` // absolute path of the switchboard.toml
+	Routes []config.Route `json:"routes"`
+}
+
+// ApplyResult reports what POST /v1/apply changed.
+type ApplyResult struct {
+	Added     []config.Route `json:"added"`
+	Updated   []config.Route `json:"updated"`
+	Removed   []config.Route `json:"removed"`
+	Unchanged []config.Route `json:"unchanged"`
+	Conflicts []Conflict     `json:"conflicts"` // not applied
+}
+
+// Conflict is a route from the file whose name another source already has.
+type Conflict struct {
+	Name  string `json:"name"`
+	Owner string `json:"owner"` // e.g. "a route added with 'sb add'"
 }

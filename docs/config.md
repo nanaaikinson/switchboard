@@ -39,6 +39,7 @@ redirect_https = true
 | `port`           | int  | yes      | Local upstream port, 1–65535.              |
 | `wildcard`       | bool | no       | Also match subdomains of `name`.           |
 | `redirect_https` | bool | no       | Redirect HTTP requests to HTTPS.           |
+| `file`           | str  | no       | Absolute path of the `switchboard.toml` the route was applied from ([project-config.md](project-config.md)); absent for `sb add` routes. |
 
 ## Loading rules
 

@@ -123,6 +123,7 @@ func (s *Service) Status() Status {
 // with the default TLD first. It reports whether the route is new.
 func (s *Service) Put(r config.Route) (RouteStatus, bool, error) {
 	r.Name = config.QualifyName(r.Name, s.opts.TLDs)
+	r.File = "" // routes from files are managed with Apply
 	if !config.ValidHostname(r.Name) {
 		return RouteStatus{}, false, fmt.Errorf("%w: name %q must be a hostname like myapp or *.myapp", ErrInvalid, r.Name)
 	}
@@ -170,7 +171,11 @@ func (s *Service) Delete(name string) (config.Route, error) {
 	if err := s.commit(slices.Delete(slices.Clone(s.routes), i, i+1)); err != nil {
 		return config.Route{}, err
 	}
-	s.hub.publish(Event{Type: EventRouteRemoved, Route: RouteStatus{Route: gone, Health: HealthUnknown, Source: SourceConfig}})
+	removed := RouteStatus{Route: gone, Health: HealthUnknown, Source: SourceConfig}
+	if gone.File != "" {
+		removed.Source = SourceFile
+	}
+	s.hub.publish(Event{Type: EventRouteRemoved, Route: removed})
 	return gone, nil
 }
 
@@ -198,7 +203,11 @@ func (s *Service) commit(next []config.Route) error {
 }
 
 func (s *Service) withHealth(r config.Route) RouteStatus {
-	return RouteStatus{Route: r, Health: s.health.health(r.Port), Source: SourceConfig}
+	src := SourceConfig
+	if r.File != "" {
+		src = SourceFile
+	}
+	return RouteStatus{Route: r, Health: s.health.health(r.Port), Source: src}
 }
 
 // healthChanged publishes one event per route on the port.
@@ -207,7 +216,9 @@ func (s *Service) healthChanged(port int, h Health) {
 	var affected []RouteStatus
 	for _, r := range s.routes {
 		if r.Port == port {
-			affected = append(affected, RouteStatus{Route: r, Health: h, Source: SourceConfig})
+			rs := s.withHealth(r)
+			rs.Health = h
+			affected = append(affected, rs)
 		}
 	}
 	for _, d := range s.active {

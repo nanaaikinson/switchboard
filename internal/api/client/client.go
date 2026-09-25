@@ -64,6 +64,13 @@ func (c *Client) Delete(ctx context.Context, name string) (config.Route, error) 
 	return out, err
 }
 
+// Apply makes routes the complete set of routes from the project file at file.
+func (c *Client) Apply(ctx context.Context, file string, routes []config.Route) (api.ApplyResult, error) {
+	var out api.ApplyResult
+	_, err := c.do(ctx, http.MethodPost, "/v1/apply", api.ApplyRequest{File: file, Routes: routes}, &out)
+	return out, err
+}
+
 // Status returns daemon status.
 func (c *Client) Status(ctx context.Context) (api.Status, error) {
 	var out api.Status

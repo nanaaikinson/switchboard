@@ -29,6 +29,9 @@ type Route struct {
 	Port          int    `toml:"port" json:"port"`
 	Wildcard      bool   `toml:"wildcard" json:"wildcard"`
 	RedirectHTTPS bool   `toml:"redirect_https" json:"redirect_https"`
+	// File is the absolute path of the switchboard.toml that 'sb apply'
+	// added the route from; empty for routes added with 'sb add'.
+	File string `toml:"file,omitempty" json:"file,omitempty"`
 }
 
 // Config is the on-disk route table.

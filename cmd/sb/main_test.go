@@ -67,7 +67,7 @@ func TestHelperHiddenFromHelp(t *testing.T) {
 	if strings.Contains(help, "helper") {
 		t.Error("helper should be hidden from help output")
 	}
-	for _, cmd := range []string{"daemon", "add", "rm", "ls", "open", "doctor", "setup", "uninstall"} {
+	for _, cmd := range []string{"daemon", "add", "rm", "ls", "open", "apply", "init", "doctor", "setup", "uninstall"} {
 		if !strings.Contains(help, cmd) {
 			t.Errorf("help missing %q", cmd)
 		}

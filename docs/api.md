@@ -30,8 +30,13 @@ with `*.`.
 | `GET /v1/routes`           | none    | `200`, `[RouteStatus]`                                                            | none                                                           |
 | `POST /v1/routes`          | `Route` | `201` if created, `200` if an existing name was updated; the stored `RouteStatus` | `400` for a bad JSON body, unknown field, bad name or bad port |
 | `DELETE /v1/routes/{name}` | none    | `200`, the removed `Route`                                                        | `404` if there is no such route; `409` if it comes from a Docker container |
+| `POST /v1/apply`           | `ApplyRequest` | `200`, `ApplyResult`                                                       | `400` for a relative `file`, a bad name or port, or a name listed twice |
 | `GET /v1/status`           | none    | `200`, `Status`                                                                   | none                                                           |
 | `GET /v1/events`           | none    | `200`, `text/event-stream`                                                        | none                                                           |
+
+`POST /v1/apply` replaces the routes tagged with `file`, and only those. See
+[project-config.md](project-config.md). `POST /v1/routes` always creates untagged
+(`"source": "config"`) routes, and ignores any `file` in the body.
 
 Routes with `"source": "docker"` come from running containers (see [docker.md](docker.md)).
 They appear in `GET /v1/routes`, `GET /v1/status` and route events, but are never
@@ -47,9 +52,17 @@ the proxy is rolled back and the request returns `500`.
 // Route
 {"name": "myapp.test", "port": 7000, "wildcard": false, "redirect_https": true}
 
-// RouteStatus = Route + health: "up" | "down" | "unknown", and source: "config" | "docker"
+// RouteStatus = Route + health: "up" | "down" | "unknown", and source: "config" | "file" | "docker"
 {"name": "myapp.test", "port": 7000, "wildcard": false, "redirect_https": true, "health": "up", "source": "config"}
+{"name": "shop.test", "port": 3000, "wildcard": false, "redirect_https": true, "health": "up", "source": "file", "file": "/home/me/shop/switchboard.toml"}
 {"name": "web.test", "port": 8080, "wildcard": false, "redirect_https": true, "health": "up", "source": "docker", "container": "web"}
+
+// ApplyRequest: the complete routes of one project file; [] removes them all
+{"file": "/home/me/shop/switchboard.toml", "routes": [{"name": "shop", "port": 3000, "redirect_https": true}]}
+
+// ApplyResult: what changed; conflicts were not applied
+{"added": [Route], "updated": [Route], "removed": [Route], "unchanged": [Route],
+ "conflicts": [{"name": "admin.shop.test", "owner": "a route added with 'sb add'"}]}
 
 // Status
 {

@@ -93,8 +93,8 @@ func newLsCmd() *cobra.Command {
 		Use:   "ls",
 		Short: "List routes and their status",
 		Long: `List routes with the health of their upstream port (up, down, or unknown
-before the first check) and where they come from: routes.toml, or a running
-Docker container. Lists containers that publish ports but got no route, and
+before the first check) and where they come from: 'sb add', a project's
+switchboard.toml ('sb apply'), or a running Docker container. Lists containers that publish ports but got no route, and
 why. Warns when the DNS server, HTTP proxy or HTTPS proxy is not listening.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -180,10 +180,13 @@ func newOpenCmd() *cobra.Command {
 	}
 }
 
-// source is "config", or "docker (<container>)".
+// source is "config", "file (<path>)" or "docker (<container>)".
 func source(r api.RouteStatus) string {
-	if r.Source == api.SourceDocker {
+	switch r.Source {
+	case api.SourceDocker:
 		return "docker (" + r.Container + ")"
+	case api.SourceFile:
+		return "file (" + shortPath(r.File) + ")"
 	}
 	return api.SourceConfig
 }

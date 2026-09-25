@@ -328,8 +328,11 @@ func checkRoutes(ctx context.Context, p platform.Platform, st api.Status, up boo
 			d := net.Dialer{Timeout: doctorDialTimeout}
 			c, err := d.DialContext(ctx, "tcp", upstream)
 			if err != nil {
-				rs[i] = checkResult{checkFail, name, "nothing listening on " + upstream,
-					fmt.Sprintf("Start the app on port %d, or point the route at another port: sb add %s <port>", r.Port, r.Name)}
+				fix := fmt.Sprintf("Start the app on port %d, or point the route at another port: sb add %s <port>", r.Port, r.Name)
+				if r.File != "" {
+					fix = fmt.Sprintf("Start the app on port %d, or change the port in %s and run 'sb apply'", r.Port, shortPath(r.File))
+				}
+				rs[i] = checkResult{checkFail, name, "nothing listening on " + upstream, fix}
 				return
 			}
 			_ = c.Close()
