@@ -27,11 +27,13 @@ Commit this as `AGENTS.md` in the repo root so every agent session starts with t
 # Switchboard — agent context
 
 ## What this is
+
 Switchboard maps local ports to trusted HTTPS names: localhost:7000 -> https://myapp.test,
-with subdomains and wildcards (api.myapp.test, *.myapp.test). It is a background daemon
+with subdomains and wildcards (api.myapp.test, \*.myapp.test). It is a background daemon
 with a CLI (`sb`), a web dashboard, and a Tauri tray app, for macOS, Linux and Windows.
 
 ## Architecture
+
 - One Go binary, three modes: `sb daemon`, `sb <command>` (CLI), `sb helper` (privileged).
 - Daemon: route table, DNS server (127.0.0.1:5353), reverse proxy (:80/:443), local CA,
   control API (JSON over HTTP on a Unix socket / Windows named pipe, versioned /v1).
@@ -42,10 +44,12 @@ with a CLI (`sb`), a web dashboard, and a Tauri tray app, for macOS, Linux and W
   proxy libraries (Caddy, Traefik, etc.).
 
 ## Layout
-cmd/sb/  internal/{dns,proxy,pki,api,config,docker,platform/{darwin,linux,windows}}
-ui/dashboard/ (embedded)  app/tray/ (Tauri)  install/  docs/
+
+cmd/sb/ internal/{dns,proxy,pki,api,config,docker,platform/{darwin,linux,windows}}
+ui/dashboard/ (embedded) app/tray/ (Tauri) install/ docs/
 
 ## Conventions
+
 - Go (latest stable), standard library first. Allowed deps: cobra, miekg/dns,
   smallstep/truststore, Docker SDK, BurntSushi/toml. Ask before adding others.
 - OS-specific code only in internal/platform/<os>, behind interfaces; use build tags.
@@ -59,6 +63,7 @@ ui/dashboard/ (embedded)  app/tray/ (Tauri)  install/  docs/
 - Every system change must have a matching revert in `sb uninstall`.
 
 ## Safety rules for agents
+
 - Never run commands with sudo, never run `sb setup` or `sb helper`, never edit
   /etc, the hosts file, trust stores or system services on the host machine.
 - Never commit keys, certificates or signing credentials.
@@ -66,11 +71,13 @@ ui/dashboard/ (embedded)  app/tray/ (Tauri)  install/  docs/
 - Bind to loopback only unless the code path is explicit LAN mode.
 
 ## Commands
+
 - Build: `go build ./cmd/sb`
-- Test: `go test ./...`  |  Integration: `go test -tags integration ./...`
-- Lint: `golangci-lint run`  |  Vulns: `govulncheck ./...`
+- Test: `go test ./...` | Integration: `go test -tags integration ./...`
+- Lint: `golangci-lint run` | Vulns: `govulncheck ./...`
 
 ## Definition of done
+
 Code + tests + docs (docs/ or --help text) + passes lint and tests + no new deps
 without approval + uninstall path covered.
 ```
