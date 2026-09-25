@@ -44,3 +44,4 @@ internal/file/testdata/
 
 # sb build output
 /sb
+/dist/

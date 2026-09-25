@@ -10,6 +10,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// version is set at build time with -ldflags "-X main.version=v1.2.3".
+var version = "dev"
+
 var errNotImplemented = errors.New("not implemented yet")
 
 func main() {
@@ -27,6 +30,7 @@ func newRootCmd() *cobra.Command {
 localhost:7000 -> https://myapp.test, with subdomains and wildcards.
 
 Run 'sb setup' once, then 'sb add <name> <port>' for each app.`,
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

@@ -54,6 +54,23 @@ func TestCommands(t *testing.T) {
 	}
 }
 
+func TestVersion(t *testing.T) {
+	old := version
+	t.Cleanup(func() { version = old })
+	version = "v1.2.3-rc.1"
+
+	root := newRootCmd()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetArgs([]string{"--version"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(out.String()), "sb version v1.2.3-rc.1"; got != want {
+		t.Errorf("--version = %q, want %q", got, want)
+	}
+}
+
 func TestHelperHiddenFromHelp(t *testing.T) {
 	root := newRootCmd()
 	var out bytes.Buffer
