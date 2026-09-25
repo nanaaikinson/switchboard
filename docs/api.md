@@ -29,9 +29,14 @@ with `*.`.
 | -------------------------- | ------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------- |
 | `GET /v1/routes`           | none    | `200`, `[RouteStatus]`                                                            | none                                                           |
 | `POST /v1/routes`          | `Route` | `201` if created, `200` if an existing name was updated; the stored `RouteStatus` | `400` for a bad JSON body, unknown field, bad name or bad port |
-| `DELETE /v1/routes/{name}` | none    | `200`, the removed `Route`                                                        | `404` if there is no such route                                |
+| `DELETE /v1/routes/{name}` | none    | `200`, the removed `Route`                                                        | `404` if there is no such route; `409` if it comes from a Docker container |
 | `GET /v1/status`           | none    | `200`, `Status`                                                                   | none                                                           |
 | `GET /v1/events`           | none    | `200`, `text/event-stream`                                                        | none                                                           |
+
+Routes with `"source": "docker"` come from running containers (see [docker.md](docker.md)).
+They appear in `GET /v1/routes`, `GET /v1/status` and route events, but are never
+saved, and `POST`/`DELETE` only manage config routes. A config route with the same name
+wins over a container's.
 
 Every change is written to `routes.toml` before it takes effect. If the write fails,
 the proxy is rolled back and the request returns `500`.
@@ -42,8 +47,9 @@ the proxy is rolled back and the request returns `500`.
 // Route
 {"name": "myapp.test", "port": 7000, "wildcard": false, "redirect_https": true}
 
-// RouteStatus = Route + health: "up" | "down" | "unknown"
-{"name": "myapp.test", "port": 7000, "wildcard": false, "redirect_https": true, "health": "up"}
+// RouteStatus = Route + health: "up" | "down" | "unknown", and source: "config" | "docker"
+{"name": "myapp.test", "port": 7000, "wildcard": false, "redirect_https": true, "health": "up", "source": "config"}
+{"name": "web.test", "port": 8080, "wildcard": false, "redirect_https": true, "health": "up", "source": "docker", "container": "web"}
 
 // Status
 {
@@ -54,6 +60,8 @@ the proxy is rolled back and the request returns `500`.
   "proxy": {"addrs": ["127.0.0.1:80", "[::1]:80"], "listening": false,
             "error": "proxy: listen 127.0.0.1:80: bind: permission denied; ..."},
   "https": {"addrs": ["127.0.0.1:443", "[::1]:443"], "listening": true},
+  "docker": {"enabled": true, "connected": true, "endpoint": "unix:///var/run/docker.sock",
+             "skipped": [{"container": "shop-worker-1", "reason": "it publishes 2 ports ..."}]},
   "routes": [RouteStatus, ...]
 }
 ```

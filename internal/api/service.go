@@ -41,8 +41,12 @@ type Service struct {
 	hub     *hub
 	health  *checker
 
-	mu     sync.Mutex // serializes route changes
-	routes []config.Route
+	mu           sync.Mutex     // serializes route changes
+	routes       []config.Route // from routes.toml
+	docker       []DockerRoute  // from running containers
+	active       []DockerRoute  // the Docker routes served: those not clashing with routes
+	conflicts    []DockerSkip   // the others, and why
+	dockerStatus DockerStatus
 
 	lmu   sync.Mutex
 	dns   Listener
@@ -79,13 +83,17 @@ func (s *Service) SetProxy(l Listener) { s.lmu.Lock(); s.proxy = l; s.lmu.Unlock
 // SetHTTPS records the HTTPS proxy's listening state for GET /status.
 func (s *Service) SetHTTPS(l Listener) { s.lmu.Lock(); s.https = l; s.lmu.Unlock() }
 
-// Routes returns every route with its health.
+// Routes returns every route with its health: config routes, then Docker
+// routes.
 func (s *Service) Routes() []RouteStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]RouteStatus, len(s.routes))
-	for i, r := range s.routes {
-		out[i] = s.withHealth(r)
+	out := make([]RouteStatus, 0, len(s.routes)+len(s.active))
+	for _, r := range s.routes {
+		out = append(out, s.withHealth(r))
+	}
+	for _, d := range s.active {
+		out = append(out, dockerStatus(d, s.health.health(d.Port)))
 	}
 	return out
 }
@@ -95,6 +103,10 @@ func (s *Service) Status() Status {
 	s.lmu.Lock()
 	dns, proxy, https := s.dns, s.proxy, s.https
 	s.lmu.Unlock()
+	s.mu.Lock()
+	docker := s.dockerStatus
+	docker.Skipped = slices.Concat(docker.Skipped, s.conflicts)
+	s.mu.Unlock()
 	return Status{
 		Version:       s.opts.Version,
 		UptimeSeconds: int64(time.Since(s.started).Seconds()),
@@ -102,6 +114,7 @@ func (s *Service) Status() Status {
 		DNS:           dns,
 		Proxy:         proxy,
 		HTTPS:         https,
+		Docker:        docker,
 		Routes:        s.Routes(),
 	}
 }
@@ -147,50 +160,64 @@ func (s *Service) Delete(name string) (config.Route, error) {
 	defer s.mu.Unlock()
 	i := slices.IndexFunc(s.routes, func(x config.Route) bool { return x.Name == name })
 	if i < 0 {
+		if j := slices.IndexFunc(s.active, func(d DockerRoute) bool { return d.Name == name }); j >= 0 {
+			return config.Route{}, fmt.Errorf("%w: %s comes from Docker container %s; stop the container, or label it dev.switchboard.enable=false",
+				ErrConflict, name, s.active[j].Container)
+		}
 		return config.Route{}, fmt.Errorf("%w: %s; list routes with 'sb ls'", ErrNotFound, name)
 	}
 	gone := s.routes[i]
 	if err := s.commit(slices.Delete(slices.Clone(s.routes), i, i+1)); err != nil {
 		return config.Route{}, err
 	}
-	s.hub.publish(Event{Type: EventRouteRemoved, Route: RouteStatus{Route: gone, Health: HealthUnknown}})
+	s.hub.publish(Event{Type: EventRouteRemoved, Route: RouteStatus{Route: gone, Health: HealthUnknown, Source: SourceConfig}})
 	return gone, nil
 }
 
-// commit applies next to the proxy, then saves it; on save failure the proxy
-// is rolled back so memory, proxy and disk never disagree. Caller holds s.mu.
+// commit applies next, with the Docker routes that don't clash with it, to
+// the proxy, then saves next; on save failure the proxy is rolled back so
+// memory, proxy and disk never disagree. Caller holds s.mu.
 func (s *Service) commit(next []config.Route) error {
-	if err := s.opts.Proxy.SetRoutes(next); err != nil {
+	all, active, conflicts := merge(next, s.docker)
+	if err := s.opts.Proxy.SetRoutes(all); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	cfg := &config.Config{SchemaVersion: config.SchemaVersion, Routes: next}
 	if err := config.Save(s.opts.ConfigPath, cfg); err != nil {
-		if rerr := s.opts.Proxy.SetRoutes(s.routes); rerr != nil {
+		prev, _, _ := merge(s.routes, s.docker)
+		if rerr := s.opts.Proxy.SetRoutes(prev); rerr != nil {
 			return fmt.Errorf("%w (and restoring the previous routes failed: %w)", err, rerr)
 		}
 		return err
 	}
-	s.routes = next
-	s.health.track(ports(next))
+	old := s.active
+	s.routes, s.active, s.conflicts = next, active, conflicts
+	s.health.track(ports(all))
+	s.publishDockerDiff(old, active)
 	return nil
 }
 
 func (s *Service) withHealth(r config.Route) RouteStatus {
-	return RouteStatus{Route: r, Health: s.health.health(r.Port)}
+	return RouteStatus{Route: r, Health: s.health.health(r.Port), Source: SourceConfig}
 }
 
 // healthChanged publishes one event per route on the port.
 func (s *Service) healthChanged(port int, h Health) {
 	s.mu.Lock()
-	var affected []config.Route
+	var affected []RouteStatus
 	for _, r := range s.routes {
 		if r.Port == port {
-			affected = append(affected, r)
+			affected = append(affected, RouteStatus{Route: r, Health: h, Source: SourceConfig})
+		}
+	}
+	for _, d := range s.active {
+		if d.Port == port {
+			affected = append(affected, dockerStatus(d, h))
 		}
 	}
 	s.mu.Unlock()
 	for _, r := range affected {
-		s.hub.publish(Event{Type: EventHealthChanged, Route: RouteStatus{Route: r, Health: h}})
+		s.hub.publish(Event{Type: EventHealthChanged, Route: r})
 	}
 }
 

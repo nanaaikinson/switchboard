@@ -12,10 +12,39 @@ const (
 	HealthDown    Health = "down"
 )
 
-// RouteStatus is a route plus its upstream health.
+// Route sources.
+const (
+	SourceConfig = "config" // routes.toml, managed with sb add and sb rm
+	SourceDocker = "docker" // a running container; never persisted
+)
+
+// RouteStatus is a route plus its upstream health and where it comes from.
 type RouteStatus struct {
 	config.Route
-	Health Health `json:"health"`
+	Health    Health `json:"health"`
+	Source    string `json:"source"`              // SourceConfig or SourceDocker
+	Container string `json:"container,omitempty"` // for SourceDocker
+}
+
+// DockerRoute is a route for a running container.
+type DockerRoute struct {
+	config.Route
+	Container string
+}
+
+// DockerSkip is a container that publishes ports but has no route, and why.
+type DockerSkip struct {
+	Container string `json:"container"`
+	Reason    string `json:"reason"`
+}
+
+// DockerStatus reports container discovery.
+type DockerStatus struct {
+	Enabled   bool         `json:"enabled"`
+	Connected bool         `json:"connected"`
+	Endpoint  string       `json:"endpoint,omitempty"`
+	Error     string       `json:"error,omitempty"` // why it isn't connected; retried quietly
+	Skipped   []DockerSkip `json:"skipped,omitempty"`
 }
 
 // Listener reports whether a daemon component is serving.
@@ -33,6 +62,7 @@ type Status struct {
 	DNS           Listener      `json:"dns"`
 	Proxy         Listener      `json:"proxy"` // plain HTTP
 	HTTPS         Listener      `json:"https"`
+	Docker        DockerStatus  `json:"docker"`
 	Routes        []RouteStatus `json:"routes"`
 }
 

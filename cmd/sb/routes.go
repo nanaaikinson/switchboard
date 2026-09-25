@@ -92,9 +92,10 @@ func newLsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ls",
 		Short: "List routes and their status",
-		Long: `List routes with the health of their upstream port: up, down, or unknown
-before the first check. Warns when the DNS server, HTTP proxy or HTTPS proxy
-is not listening.`,
+		Long: `List routes with the health of their upstream port (up, down, or unknown
+before the first check) and where they come from: routes.toml, or a running
+Docker container. Lists containers that publish ports but got no route, and
+why. Warns when the DNS server, HTTP proxy or HTTPS proxy is not listening.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, err := newClient()
@@ -121,14 +122,23 @@ is not listening.`,
 			}
 			if len(st.Routes) == 0 {
 				fmt.Fprintln(out, "No routes. Add one with: sb add myapp 3000")
-				return nil
+			} else {
+				tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+				fmt.Fprintln(tw, "NAME\tPORT\tUPSTREAM\tSOURCE")
+				for _, r := range st.Routes {
+					fmt.Fprintf(tw, "%s\t%d\t%s\t%s\n", displayName(r.Route), r.Port, r.Health, source(r))
+				}
+				if err := tw.Flush(); err != nil {
+					return err
+				}
 			}
-			tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "NAME\tPORT\tUPSTREAM")
-			for _, r := range st.Routes {
-				fmt.Fprintf(tw, "%s\t%d\t%s\n", displayName(r.Route), r.Port, r.Health)
+			if len(st.Docker.Skipped) > 0 {
+				fmt.Fprintln(out, "\nDocker containers without a route:")
+				for _, sk := range st.Docker.Skipped {
+					fmt.Fprintf(out, "  %s: %s\n", sk.Container, sk.Reason)
+				}
 			}
-			return tw.Flush()
+			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print routes as JSON")
@@ -168,6 +178,14 @@ func newOpenCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// source is "config", or "docker (<container>)".
+func source(r api.RouteStatus) string {
+	if r.Source == api.SourceDocker {
+		return "docker (" + r.Container + ")"
+	}
+	return api.SourceConfig
 }
 
 // displayName shows wildcard coverage: "myapp.test (+ *.myapp.test)".

@@ -113,6 +113,8 @@ func statusFor(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, ErrInvalid):
 		return http.StatusBadRequest
+	case errors.Is(err, ErrConflict):
+		return http.StatusConflict
 	default:
 		return http.StatusInternalServerError
 	}

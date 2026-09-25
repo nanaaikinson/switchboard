@@ -20,6 +20,7 @@ import (
 	"github.com/nanaaikinson/switchboard/internal/api"
 	"github.com/nanaaikinson/switchboard/internal/config"
 	"github.com/nanaaikinson/switchboard/internal/dns"
+	"github.com/nanaaikinson/switchboard/internal/docker"
 	"github.com/nanaaikinson/switchboard/internal/pki"
 	"github.com/nanaaikinson/switchboard/internal/platform"
 	"github.com/nanaaikinson/switchboard/internal/proxy"
@@ -30,12 +31,15 @@ type daemonOptions struct {
 	httpAddrs      []string
 	httpsAddrs     []string
 	healthInterval time.Duration
-	useHelper      bool   // ask the privileged helper for the HTTP listeners first
-	ready          func() // called once the control socket is accepting; for tests
+	useHelper      bool // ask the privileged helper for the HTTP listeners first
+	// dockerConnect discovers containers; nil disables Docker routes.
+	dockerConnect func(context.Context) (docker.Client, string, error)
+	ready         func() // called once the control socket is accepting; for tests
 }
 
 func newDaemonCmd() *cobra.Command {
 	var opts daemonOptions
+	var useDocker bool
 	cmd := &cobra.Command{
 		Use:   "daemon",
 		Short: "Run the Switchboard daemon (DNS, proxy, control API)",
@@ -53,9 +57,18 @@ with redirect_https are redirected to HTTPS while HTTPS is up.
 
 Unless --http-addr or --https-addr is given, the daemon first asks the
 privileged helper installed by 'sb setup' for the port 80 and 443 listeners,
-and binds any it did not get itself.`,
+and binds any it did not get itself.
+
+With --docker (the default), running containers that publish a TCP port get
+routes too: <container>.<tld>, or <service>.<project>.<tld> for Compose. They
+are never saved to routes.toml. The daemon finds Docker through DOCKER_HOST,
+else the Docker, OrbStack, Colima, Rancher Desktop and Podman default sockets,
+and retries quietly every 10 seconds while none is running. See 'sb ls'.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if useDocker {
+				opts.dockerConnect = docker.Connect
+			}
 			opts.useHelper = !cmd.Flags().Changed("http-addr") && !cmd.Flags().Changed("https-addr")
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
@@ -67,6 +80,7 @@ and binds any it did not get itself.`,
 	f.StringSliceVar(&opts.httpAddrs, "http-addr", proxy.DefaultAddrs(), "HTTP proxy listen addresses (loopback only)")
 	f.StringSliceVar(&opts.httpsAddrs, "https-addr", proxy.DefaultTLSAddrs(), "HTTPS proxy listen addresses (loopback only)")
 	f.DurationVar(&opts.healthInterval, "health-interval", api.DefaultHealthInterval, "how often to check upstream ports")
+	f.BoolVar(&useDocker, "docker", true, "route running Docker containers that publish a TCP port")
 	return cmd
 }
 
@@ -109,6 +123,13 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 	var wg sync.WaitGroup
 	wg.Go(func() { svc.Run(ctx) })
 	wg.Go(func() { hosts.run(ctx, platform.Current()) })
+	if opts.dockerConnect != nil {
+		svc.SetDocker(api.DockerStatus{Enabled: true}, nil)
+		w := &docker.Watcher{Connect: opts.dockerConnect, TLDs: tlds, OnChange: func(st docker.State) {
+			svc.SetDocker(dockerStatus(st))
+		}}
+		wg.Go(func() { w.Run(ctx) })
+	}
 
 	d, err := dns.New(opts.dnsAddr, tlds)
 	if err != nil {
@@ -302,4 +323,17 @@ func (h *hostsSyncer) run(ctx context.Context, p platform.Platform) {
 			slog.Debug("hosts sync failed", "err", err)
 		}
 	}
+}
+
+// dockerStatus converts the watcher's state for the API.
+func dockerStatus(st docker.State) (api.DockerStatus, []api.DockerRoute) {
+	out := api.DockerStatus{Enabled: true, Connected: st.Connected, Endpoint: st.Endpoint, Error: st.Err}
+	for _, sk := range st.Skipped {
+		out.Skipped = append(out.Skipped, api.DockerSkip{Container: sk.Container, Reason: sk.Reason})
+	}
+	routes := make([]api.DockerRoute, len(st.Routes))
+	for i, r := range st.Routes {
+		routes[i] = api.DockerRoute{Route: r.Route, Container: r.Container}
+	}
+	return out, routes
 }
