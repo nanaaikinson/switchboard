@@ -1,0 +1,375 @@
+package darwin
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"os/exec"
+	"os/user"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+)
+
+// ErrForeignFile means a file Switchboard would manage exists with content it
+// did not write, so it is left alone.
+var ErrForeignFile = errors.New("not written by Switchboard")
+
+// System paths. Home-relative paths are joined to Options.Home.
+const (
+	helperBinPath   = "/Library/PrivilegedHelperTools/" + HelperLabel
+	helperPlistPath = "/Library/LaunchDaemons/" + HelperLabel + ".plist"
+	helperLogPath   = "/var/log/switchboard-helper.log"
+	helperSockDir   = "/var/run/switchboard"
+	resolverDir     = "/etc/resolver"
+	agentPlistRel   = "Library/LaunchAgents/" + DaemonLabel + ".plist"
+	agentLogRel     = "Library/Logs/switchboard-daemon.log"
+)
+
+// DefaultHelperSocket is where the helper serves the listener protocol.
+const DefaultHelperSocket = helperSockDir + "/helper.sock"
+
+// Options configures a Platform. UID, Home and SbPath describe the user who
+// ran `sb setup`; the rest exist for tests.
+type Options struct {
+	UID    int
+	Home   string
+	SbPath string
+
+	Root         string                                            // prefix for every system path; "" is /
+	Run          func(name string, args ...string) ([]byte, error) // nil runs the command
+	Chown        func(f *os.File, uid, gid int) error              // nil is (*os.File).Chown
+	HelperSocket string                                            // "" is DefaultHelperSocket
+	HelperAddrs  []string                                          // "" is 127.0.0.1:80 and [::1]:80
+}
+
+// Platform implements platform.Platform for macOS.
+type Platform struct{ o Options }
+
+// New returns a Platform for o.
+func New(o Options) *Platform {
+	if o.Root == "" {
+		o.Root = "/"
+	}
+	if o.Run == nil {
+		o.Run = func(name string, args ...string) ([]byte, error) {
+			return exec.Command(name, args...).CombinedOutput() //nolint:gosec // G204: only called with "launchctl" and fixed verbs
+		}
+	}
+	if o.Chown == nil {
+		o.Chown = (*os.File).Chown
+	}
+	if o.HelperSocket == "" {
+		o.HelperSocket = DefaultHelperSocket
+	}
+	if len(o.HelperAddrs) == 0 {
+		o.HelperAddrs = []string{"127.0.0.1:80", "[::1]:80"}
+	}
+	return &Platform{o: o}
+}
+
+func (p *Platform) fs(path string) string { return filepath.Join(p.o.Root, path) }
+
+func (p *Platform) agentPlist() string { return filepath.Join(p.o.Home, agentPlistRel) }
+func (p *Platform) agentLog() string   { return filepath.Join(p.o.Home, agentLogRel) }
+
+func resolverPath(tld string) string { return filepath.Join(resolverDir, tld) }
+
+// Validate checks the options before any privileged change.
+func (p *Platform) Validate() error {
+	if p.o.UID <= 0 {
+		return fmt.Errorf("uid %d: install for a regular user, not root", p.o.UID)
+	}
+	if !filepath.IsAbs(p.o.Home) || !filepath.IsAbs(p.o.SbPath) {
+		return errors.New("home and sb path must be absolute")
+	}
+	if err := p.checkUserDir(p.o.Home); err != nil {
+		return err
+	}
+	if fi, err := os.Stat(p.fs(p.o.SbPath)); err != nil || !fi.Mode().IsRegular() {
+		return fmt.Errorf("sb binary %s is not a regular file", p.o.SbPath)
+	}
+	return nil
+}
+
+// InstallPlan lists, in order, what Install makes the system do.
+func (p *Platform) InstallPlan(tld string, dnsPort int) []string {
+	return []string{
+		fmt.Sprintf("Write %s so .%s names resolve via 127.0.0.1 port %d", resolverPath(tld), tld, dnsPort),
+		fmt.Sprintf("Copy %s to %s (owned by root, mode 0755)", p.o.SbPath, helperBinPath),
+		fmt.Sprintf("Write %s and load it: runs the helper as root at boot; it only binds 127.0.0.1:80 and [::1]:80 and passes them to your daemon", helperPlistPath),
+		fmt.Sprintf("Write %s and load it: runs 'sb daemon' as you at login", p.agentPlist()),
+	}
+}
+
+// UninstallPlan lists what Uninstall removes. Missing items are skipped.
+func (p *Platform) UninstallPlan(tld string) []string {
+	return []string{
+		fmt.Sprintf("Unload and remove %s and %s", p.agentPlist(), p.agentLog()),
+		fmt.Sprintf("Remove %s (only if Switchboard wrote it), and %s if it is then empty", resolverPath(tld), resolverDir),
+		fmt.Sprintf("Unload and remove %s, %s, %s and %s", helperPlistPath, helperBinPath, helperLogPath, helperSockDir),
+	}
+}
+
+// InstallResolver points the OS resolver for tld at 127.0.0.1:port. It is a
+// no-op if Switchboard already wrote the same file, and fails if another tool
+// owns it.
+func (p *Platform) InstallResolver(tld string, port int) error {
+	if !validTLD(tld) || port < 1 || port > 65535 {
+		return fmt.Errorf("install resolver: invalid tld %q or port %d", tld, port)
+	}
+	path, want := resolverPath(tld), resolverContent(port)
+	switch got, err := os.ReadFile(p.fs(path)); {
+	case err == nil && bytes.Equal(got, want):
+		return nil
+	case err == nil:
+		return fmt.Errorf("install resolver: %s exists: %w; another tool (such as Laravel Valet) may own .%s. Remove it or use another TLD",
+			path, ErrForeignFile, tld)
+	case !errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("install resolver: %w", err)
+	}
+	if err := os.MkdirAll(p.fs(resolverDir), 0o755); err != nil { //nolint:gosec // G301: system convention for /etc/resolver
+		return fmt.Errorf("install resolver: %w", err)
+	}
+	return p.writeFile(path, want, 0o644, 0, 0)
+}
+
+// RemoveResolver removes the resolver file for tld if Switchboard wrote it,
+// then removes /etc/resolver if it is empty. Missing files are not an error.
+func (p *Platform) RemoveResolver(tld string) error {
+	if !validTLD(tld) {
+		return fmt.Errorf("remove resolver: invalid tld %q", tld)
+	}
+	path := resolverPath(tld)
+	got, err := os.ReadFile(p.fs(path))
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		return fmt.Errorf("remove resolver: %w", err)
+	case !isOurResolver(got):
+		return fmt.Errorf("left %s in place: %w", path, ErrForeignFile)
+	default:
+		if err := os.Remove(p.fs(path)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("remove resolver: %w", err)
+		}
+	}
+	_ = os.Remove(p.fs(resolverDir)) // fails harmlessly unless empty
+	return nil
+}
+
+func isOurResolver(b []byte) bool {
+	rest, ok := strings.CutPrefix(string(b), resolverMarker+"nameserver 127.0.0.1\nport ")
+	if !ok {
+		return false
+	}
+	port, err := strconv.Atoi(strings.TrimSuffix(rest, "\n"))
+	return err == nil && bytes.Equal(b, resolverContent(port))
+}
+
+// InstallService installs and loads the root helper LaunchDaemon and the
+// user's daemon LaunchAgent. Re-running replaces both.
+func (p *Platform) InstallService() error {
+	gid, err := p.userGID()
+	if err != nil {
+		return err
+	}
+	if err := p.copyHelperBinary(); err != nil {
+		return err
+	}
+	if err := p.writeFile(helperPlistPath, helperPlist(helperBinPath, p.o.UID, helperLogPath), 0o644, 0, 0); err != nil {
+		return err
+	}
+	if err := p.reload("system", HelperLabel, helperPlistPath); err != nil {
+		return err
+	}
+
+	if err := p.checkUserDir(filepath.Join(p.o.Home, "Library")); err != nil {
+		return err
+	}
+	agentDir := filepath.Dir(p.agentPlist())
+	if err := p.mkdirOwned(agentDir, gid); err != nil {
+		return err
+	}
+	if err := p.checkUserDir(agentDir); err != nil {
+		return err
+	}
+	if err := p.writeFile(p.agentPlist(), agentPlist(p.o.SbPath, p.agentLog()), 0o644, p.o.UID, gid); err != nil {
+		return err
+	}
+	return p.reload(p.guiDomain(), DaemonLabel, p.agentPlist())
+}
+
+// RemoveService unloads and deletes everything InstallService created. It is
+// safe to run when nothing is installed.
+func (p *Platform) RemoveService() error {
+	var errs []error
+	errs = append(errs, p.unload(p.guiDomain(), DaemonLabel))
+	for _, f := range []string{p.agentPlist(), p.agentLog()} {
+		errs = append(errs, p.removeUserFile(f))
+	}
+	errs = append(errs, p.unload("system", HelperLabel))
+	for _, f := range []string{helperPlistPath, helperBinPath, helperLogPath} {
+		errs = append(errs, p.remove(f))
+	}
+	if err := os.RemoveAll(p.fs(helperSockDir)); err != nil {
+		errs = append(errs, fmt.Errorf("remove %s: %w", helperSockDir, err))
+	}
+	return errors.Join(errs...)
+}
+
+func (p *Platform) guiDomain() string { return "gui/" + strconv.Itoa(p.o.UID) }
+
+// reload boots out any loaded copy of the job, then bootstraps plist.
+func (p *Platform) reload(domain, label, plistPath string) error {
+	if err := p.unload(domain, label); err != nil {
+		return err
+	}
+	if out, err := p.o.Run("launchctl", "bootstrap", domain, plistPath); err != nil {
+		return fmt.Errorf("launchctl bootstrap %s %s: %w: %s", domain, plistPath, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// unload boots out domain/label. Not being loaded is success; still being
+// loaded afterwards is an error.
+func (p *Platform) unload(domain, label string) error {
+	target := domain + "/" + label
+	if _, err := p.o.Run("launchctl", "print", target); err != nil {
+		return nil // not loaded
+	}
+	out, err := p.o.Run("launchctl", "bootout", target)
+	if _, perr := p.o.Run("launchctl", "print", target); perr == nil {
+		return fmt.Errorf("launchctl bootout %s: still loaded (%w: %s)", target, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (p *Platform) remove(path string) error {
+	if err := os.Remove(p.fs(path)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", path, err)
+	}
+	return nil
+}
+
+func (p *Platform) userGID() (int, error) {
+	u, err := user.LookupId(strconv.Itoa(p.o.UID))
+	if err != nil {
+		return 0, fmt.Errorf("look up uid %d: %w", p.o.UID, err)
+	}
+	return strconv.Atoi(u.Gid)
+}
+
+// copyHelperBinary installs a root-owned copy of sb so the root LaunchDaemon
+// never runs a binary the user can replace.
+func (p *Platform) copyHelperBinary() error {
+	src, err := os.Open(p.fs(p.o.SbPath))
+	if err != nil {
+		return fmt.Errorf("copy helper: %w", err)
+	}
+	defer src.Close()
+	data, err := io.ReadAll(src)
+	if err != nil {
+		return fmt.Errorf("copy helper: %w", err)
+	}
+	if err := os.MkdirAll(p.fs(filepath.Dir(helperBinPath)), 0o755); err != nil { //nolint:gosec // G301: system convention for PrivilegedHelperTools
+		return fmt.Errorf("copy helper: %w", err)
+	}
+	return p.writeFile(helperBinPath, data, 0o755, 0, 0)
+}
+
+// removeUserFile removes a file in the user's home, but only when its parent
+// is a real directory owned by the user, so root never deletes through a
+// symlinked directory.
+func (p *Platform) removeUserFile(path string) error {
+	if _, err := os.Lstat(p.fs(filepath.Dir(path))); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err := p.checkUserDir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	return p.remove(path)
+}
+
+// checkUserDir requires dir to be a real directory (not a symlink) owned by
+// the user. Root writes into the user's home only below such directories.
+func (p *Platform) checkUserDir(dir string) error {
+	fi, err := os.Lstat(p.fs(dir))
+	if err != nil {
+		return fmt.Errorf("check %s: %w", dir, err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s must be a directory, not a symlink or file", dir)
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != p.o.UID {
+		return fmt.Errorf("%s is not owned by uid %d", dir, p.o.UID)
+	}
+	return nil
+}
+
+// mkdirOwned creates dir (one level) owned by the user if it is missing. The
+// new directory is opened without following symlinks before it is chowned.
+func (p *Platform) mkdirOwned(dir string, gid int) error {
+	if _, err := os.Lstat(p.fs(dir)); err == nil {
+		return nil
+	}
+	if err := os.Mkdir(p.fs(dir), 0o755); err != nil { //nolint:gosec // G301: macOS default for ~/Library/LaunchAgents
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	f, err := os.OpenFile(p.fs(dir), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_DIRECTORY, 0)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", dir, err)
+	}
+	defer f.Close()
+	if err := p.o.Chown(f, p.o.UID, gid); err != nil {
+		return fmt.Errorf("chown %s: %w", dir, err)
+	}
+	return nil
+}
+
+// writeFile atomically writes data to path with the given mode and owner. The
+// temp file is created with O_EXCL and renamed over path, so a symlink planted
+// at path is replaced rather than followed.
+func (p *Platform) writeFile(path string, data []byte, mode os.FileMode, uid, gid int) error {
+	full := p.fs(path)
+	tmp, err := os.CreateTemp(filepath.Dir(full), "."+filepath.Base(full)+".sb-*")
+	if err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	name := tmp.Name()
+	defer func() { _ = os.Remove(name) }()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod %s: %w", path, err)
+	}
+	if err := p.o.Chown(tmp, uid, gid); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chown %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := os.Rename(name, full); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
+func validTLD(tld string) bool {
+	if tld == "" || len(tld) > 63 {
+		return false
+	}
+	for _, c := range tld {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return false
+		}
+	}
+	return tld[0] != '-' && tld[len(tld)-1] != '-'
+}

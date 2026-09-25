@@ -16,6 +16,7 @@ import (
 	"github.com/nanaaikinson/switchboard/internal/api"
 	"github.com/nanaaikinson/switchboard/internal/config"
 	"github.com/nanaaikinson/switchboard/internal/dns"
+	"github.com/nanaaikinson/switchboard/internal/platform"
 	"github.com/nanaaikinson/switchboard/internal/proxy"
 )
 
@@ -23,6 +24,7 @@ type daemonOptions struct {
 	dnsAddr        string
 	httpAddrs      []string
 	healthInterval time.Duration
+	useHelper      bool   // ask the privileged helper for the HTTP listeners first
 	ready          func() // called once the control socket is accepting; for tests
 }
 
@@ -37,9 +39,14 @@ upstream port and serves the control API on a Unix socket in the config dir.
 
 Normally started by the OS service manager, not by hand. If the DNS server or
 proxy cannot bind (for example, port 80 without the helper), the daemon keeps
-running and reports the error in 'sb ls' and GET /v1/status.`,
+running and reports the error in 'sb ls' and GET /v1/status.
+
+Unless --http-addr is given, the daemon first asks the privileged helper
+installed by 'sb setup' for the port 80 listeners, and binds them itself only
+if the helper is not available.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			opts.useHelper = !cmd.Flags().Changed("http-addr")
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			return runDaemon(ctx, opts)
@@ -108,7 +115,7 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 		})
 	}
 
-	if lns, err := proxy.Listen(opts.httpAddrs); err != nil {
+	if lns, err := proxyListeners(ctx, opts); err != nil {
 		slog.Warn("proxy not listening", "err", err)
 		svc.SetProxy(api.Listener{Addrs: opts.httpAddrs, Error: err.Error()})
 	} else {
@@ -131,6 +138,20 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 	wg.Wait()
 	slog.Info("daemon stopped")
 	return err
+}
+
+// proxyListeners gets the HTTP listeners from the helper when allowed, else
+// binds opts.httpAddrs directly.
+func proxyListeners(ctx context.Context, opts daemonOptions) ([]net.Listener, error) {
+	if opts.useHelper {
+		lns, err := platform.Current().HelperListeners(ctx)
+		if err == nil {
+			slog.Info("proxy listeners received from helper", "count", len(lns))
+			return lns, nil
+		}
+		slog.Info("helper unavailable; binding proxy ports directly", "err", err)
+	}
+	return proxy.Listen(opts.httpAddrs)
 }
 
 func listenerAddrs(lns []net.Listener) []string {
