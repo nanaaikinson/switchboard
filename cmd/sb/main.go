@@ -35,15 +35,7 @@ Run 'sb setup' once, then 'sb add <name> <port>' for each app.`,
 		SilenceErrors: true,
 	}
 	root.AddCommand(
-		// Modes.
-		stub(&cobra.Command{
-			Use:   "daemon",
-			Short: "Run the Switchboard daemon (DNS, proxy, control API)",
-			Long: `Run the background daemon that holds the route table and serves DNS,
-the reverse proxy and the control API. Normally started by the OS service
-manager, not by hand.`,
-			Args: cobra.NoArgs,
-		}),
+		newDaemonCmd(),
 		stub(&cobra.Command{
 			Use:   "helper",
 			Short: "Run the privileged helper (internal)",
@@ -53,7 +45,6 @@ manager and accepts commands only from the daemon; do not run it by hand.`,
 			Args:   cobra.NoArgs,
 			Hidden: true,
 		}),
-		// CLI.
 		stub(&cobra.Command{
 			Use:     "add <name> <port>",
 			Short:   "Route a name to a local port",
