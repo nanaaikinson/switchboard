@@ -4,5 +4,7 @@ package platform
 
 import "github.com/nanaaikinson/switchboard/internal/platform/linux"
 
-// New returns the linux platform. System setup is not implemented yet.
-func New(Options) Platform { return linux.Platform{} }
+// New returns the Linux (systemd) platform for o.
+func New(o Options) Platform {
+	return linux.New(linux.Options{UID: o.UID, Home: o.Home, SbPath: o.SbPath})
+}

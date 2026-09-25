@@ -71,11 +71,12 @@ func newTrustCmd() *cobra.Command {
 		Long: `Create the local CA if needed, then trust it so browsers accept Switchboard's
 HTTPS certificates without warnings. sb trust prints every change and asks
 for confirmation, then runs a single 'sudo sb helper trust' for the system
-trust store. It then adds the CA to your Firefox stores as you, not root.
+trust store (macOS: System keychain; Linux: the distro CA bundle). It then
+adds the CA to your browsers' NSS stores as you, not root.
 
 The CA is name-constrained: it can only sign names under Switchboard's TLDs,
 never real domains or IP addresses. 'sb setup' already does this; run
-sb trust again after 'sb untrust' or after installing Firefox.`,
+sb trust again after 'sb untrust' or after installing a browser.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if os.Geteuid() == 0 {

@@ -2,32 +2,22 @@ package darwin
 
 import (
 	"crypto/sha1" //nolint:gosec // G505: SHA-1 is how the security tool names keychain items, not a security check
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
-	"time"
 
 	"github.com/smallstep/truststore"
 
-	"github.com/nanaaikinson/switchboard/internal/pki"
+	"github.com/nanaaikinson/switchboard/internal/platform/posix"
 )
 
 const systemKeychain = "/Library/Keychains/System.keychain"
 
 // NSSStore is the part of truststore.NSSTrust Switchboard uses.
-type NSSStore interface {
-	PreCheck() error
-	Exists(cert *x509.Certificate) bool
-	Install(filename string, cert *x509.Certificate) error
-	Uninstall(filename string, cert *x509.Certificate) error
-}
+type NSSStore = posix.NSSStore
 
 func defaultNSS() (NSSStore, error) { return truststore.NewNSSTrust() }
 
@@ -100,84 +90,18 @@ func (p *Platform) UntrustCA(certPath string) error {
 	return nil
 }
 
-// TrustNSS adds the CA to the user's Firefox (NSS) stores. Run as the user:
-// NSS databases live in the user's profile and must stay owned by them. It
-// is a no-op when there are no NSS databases.
-func (p *Platform) TrustNSS(certPath string) error {
-	cert, err := readCA(certPath, true)
-	if err != nil {
-		return fmt.Errorf("trust CA in Firefox: %w", err)
-	}
-	nss, err := p.o.NSS()
-	if err != nil {
-		if p.hasFirefox() {
-			return errors.New("certutil is missing but Firefox is installed; run 'brew install nss', then 'sb trust'")
-		}
-		return nil
-	}
-	if nss.PreCheck() != nil || nss.Exists(cert) {
-		return nil // no NSS databases, or already trusted
-	}
-	if err := nss.Install(certPath, cert); err != nil {
-		return fmt.Errorf("trust CA in Firefox: %w; quit Firefox and run 'sb trust' again", err)
-	}
-	return nil
-}
+// TrustNSS adds the CA to the user's Firefox (NSS) stores. Run as the user.
+func (p *Platform) TrustNSS(certPath string) error { return p.nss().Trust(certPath) }
 
 // UntrustNSS removes the CA from the user's Firefox (NSS) stores.
-func (p *Platform) UntrustNSS(certPath string) error {
-	cert, err := readCA(certPath, false)
-	if err != nil {
-		return fmt.Errorf("untrust CA in Firefox: %w", err)
+func (p *Platform) UntrustNSS(certPath string) error { return p.nss().Untrust(certPath) }
+
+func (p *Platform) nss() posix.NSS {
+	return posix.NSS{
+		Open:     p.o.NSS,
+		Profiles: []string{filepath.Join(p.o.Home, "Library/Application Support/Firefox/Profiles/*")},
+		Install:  "brew install nss",
 	}
-	nss, err := p.o.NSS()
-	if err != nil || nss.PreCheck() != nil {
-		return nil // no certutil or no NSS databases: nothing we could have added
-	}
-	if err := nss.Uninstall(certPath, cert); err != nil {
-		return fmt.Errorf("untrust CA in Firefox: %w; quit Firefox and run 'sb untrust' again", err)
-	}
-	return nil
 }
 
-func (p *Platform) hasFirefox() bool {
-	m, _ := filepath.Glob(filepath.Join(p.o.Home, "Library/Application Support/Firefox/Profiles/*"))
-	return len(m) > 0
-}
-
-// readCA reads and validates a CA certificate without following symlinks,
-// since the privileged helper reads it from the user's config dir. With
-// current set, the certificate must also be valid now.
-func readCA(path string, current bool) (*x509.Certificate, error) {
-	if !filepath.IsAbs(path) {
-		return nil, fmt.Errorf("CA path %q is not absolute", path)
-	}
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0) //nolint:gosec // G304: validated below; symlinks refused
-	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", path, err)
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
-	}
-	data, err := io.ReadAll(io.LimitReader(f, 64<<10))
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
-	}
-	cert, err := pki.ParseCert(data)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	validate := pki.ValidateConstraints
-	if current {
-		validate = func(c *x509.Certificate) error { return pki.Validate(c, time.Now()) }
-	}
-	if err := validate(cert); err != nil {
-		return nil, fmt.Errorf("%s is not a Switchboard CA: %w", path, err)
-	}
-	return cert, nil
-}
+var readCA = posix.ReadCA

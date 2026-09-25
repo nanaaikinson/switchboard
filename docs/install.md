@@ -39,8 +39,25 @@ curl -fsSL https://raw.githubusercontent.com/nanaaikinson/switchboard/main/insta
 such as `v0.2.0-rc.1`, set `SB_VERSION`.
 
 The script only installs the binary. `sb setup` makes the system changes (see
-[setup-macos.md](setup-macos.md)). Re-run `sb setup` after every upgrade so that the
+[setup-macos.md](setup-macos.md) and [setup-linux.md](setup-linux.md)). Re-run `sb setup` after every upgrade so that the
 root helper's copy of `sb` is refreshed.
+
+## Debian, Ubuntu, Fedora and other Linux distros
+
+Every release also has `.deb` and `.rpm` packages that install `/usr/bin/sb`:
+
+```bash
+sudo apt install ./switchboard_0.2.0_amd64.deb
+```
+
+```bash
+sudo dnf install ./switchboard-0.2.0-1.x86_64.rpm
+```
+
+Then run `sb setup` as your normal user. See [setup-linux.md](setup-linux.md). The
+packages recommend `libnss3-tools` / `nss-tools`, which Chrome and Firefox trust
+needs. Before you remove the package, run `sb uninstall`, because the package can't
+undo a per-user setup.
 
 ## Windows
 
@@ -50,7 +67,8 @@ Download the `.zip` for your CPU from the
 ## Uninstalling
 
 Run `sb uninstall` to revert `sb setup`. Then delete the binary: `rm ~/.local/bin/sb`,
-or `sudo rm /usr/local/bin/sb` if you used `--global`.
+or `sudo rm /usr/local/bin/sb` if you used `--global`, or remove the `switchboard`
+package.
 
 ## Enabling signature checks (maintainers)
 

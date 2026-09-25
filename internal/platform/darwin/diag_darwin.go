@@ -13,22 +13,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nanaaikinson/switchboard/internal/platform/posix"
 )
 
-// fixError is a diagnostic failure that knows the one-line fix. sb doctor
-// finds the fix with errors.As on interface{ Fix() string }.
-type fixError struct {
-	err error
-	fix string
-}
-
-func (e *fixError) Error() string { return e.err.Error() }
-func (e *fixError) Unwrap() error { return e.err }
-func (e *fixError) Fix() string   { return e.fix }
-
-func withFix(fix, format string, args ...any) error {
-	return &fixError{err: fmt.Errorf(format, args...), fix: fix}
-}
+var withFix = posix.WithFix
 
 // HelperRunning reports whether the privileged helper accepts connections on
 // its socket. It connects and hangs up without sending a request.
@@ -53,7 +42,7 @@ func (p *Platform) HelperRunning(ctx context.Context) error {
 // CheckResolver reports whether /etc/resolver/<tld> is Switchboard's and points
 // at 127.0.0.1:port.
 func (p *Platform) CheckResolver(tld string, port int) error {
-	if !validTLD(tld) {
+	if !posix.ValidTLD(tld) {
 		return fmt.Errorf("invalid tld %q", tld)
 	}
 	path := resolverPath(tld)

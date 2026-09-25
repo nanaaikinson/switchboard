@@ -1,9 +1,8 @@
-.PHONY: all build test test-integration lint lint-sh vuln dist clean
+.PHONY: all build test test-integration test-e2e-linux lint lint-sh vuln dist clean
 
 BIN       := sb
 VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS   := -s -w -X main.version=$(VERSION)
-PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64
 
 all: build test lint
 
@@ -20,25 +19,20 @@ lint:
 	golangci-lint run
 
 lint-sh:
-	shellcheck --shell=sh --severity=style install/install.sh
+	shellcheck --shell=sh --severity=style install/install.sh install/packaging/*.sh test/e2e/linux/*.sh
 
 vuln:
 	govulncheck ./...
 
-# Cross-compile release archives and checksums into dist/.
+# Build release archives, SHA256SUMS and .deb/.rpm packages into dist/ with
+# GoReleaser (https://goreleaser.com/install), without publishing.
 dist:
-	rm -rf dist && mkdir -p dist
-	@set -e; for p in $(PLATFORMS); do \
-		os=$${p%/*}; arch=$${p#*/}; name=sb_$(patsubst v%,%,$(VERSION))_$${os}_$${arch}; ext=; \
-		if [ $$os = windows ]; then ext=.exe; fi; \
-		echo "build $$name"; \
-		mkdir -p dist/$$name; \
-		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" -o dist/$$name/sb$$ext ./cmd/sb; \
-		if [ $$os = windows ]; then (cd dist && zip -qr $$name.zip $$name); \
-		else tar -C dist -czf dist/$$name.tar.gz $$name; fi; \
-		rm -rf dist/$$name; \
-	done
-	cd dist && shasum -a 256 *.tar.gz *.zip > SHA256SUMS
+	goreleaser release --snapshot --clean --skip=publish
+
+# End-to-end test on Linux in a privileged container that boots systemd.
+# Needs Docker; never uses sudo on this machine. See test/e2e/linux.
+test-e2e-linux:
+	./test/e2e/linux/e2e.sh
 
 clean:
 	rm -rf $(BIN) dist

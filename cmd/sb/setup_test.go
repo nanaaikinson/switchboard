@@ -70,7 +70,7 @@ func setupEnv(t *testing.T) (spy *nssSpy, caCert string) {
 func requireDarwinNonRoot(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS != "darwin" {
-		t.Skip("sb setup is macOS-only")
+		t.Skip("these tests check the macOS plan")
 	}
 	if os.Geteuid() == 0 {
 		t.Skip("setup refuses to run as root")

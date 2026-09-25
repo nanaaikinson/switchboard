@@ -93,12 +93,12 @@ It exits with status 1 if any check fails.
 | --- | --- | --- |
 | `daemon` | the control socket answers `GET /v1/status` | re-run `sb setup`, or run `sb daemon` in a terminal to see why it stops |
 | `helper` | `/var/run/switchboard/helper.sock` accepts a connection (doctor connects and hangs up) | `sb setup` |
-| `resolver .<tld>` | `/etc/resolver/<tld>` is Switchboard's file and names the daemon's DNS port | `sb setup`; if another tool wrote it, remove that file or tool first |
+| `resolver .<tld>` | `/etc/resolver/<tld>` is Switchboard's file and names the daemon's DNS port (Linux: see [setup-linux.md](setup-linux.md)) | `sb setup`; if another tool wrote it, remove that file or tool first |
 | `probe.<tld>` | `dscacheutil -q host -a name probe.<tld>` returns 127.0.0.1 | fix the checks above, or flush the DNS cache |
 | `local CA` | the CA in `~/.config/switchboard/pki` loads, can sign every TLD, and has more than 90 days left | `sb trust` if it's missing; otherwise make a new one (see [https.md](https.md)) |
 | `https probe.<tld>` | a TLS handshake with the HTTPS proxy for `probe.<tld>` verifies against the **system** trust store, as a browser would | `sb trust` |
 | `port 80`, `port 443` | the daemon's proxy serves the port, or the port is free and the proxy doesn't use it | stop the process named in the failure |
-| one line per route | the route's upstream `127.0.0.1:<port>` accepts a TCP connection | start the app, or `sb add <name> <port>` |
+| one line per route | the route's upstream `127.0.0.1:<port>` accepts a TCP connection; for a wildcard route, `sb-probe.<name>` also resolves to 127.0.0.1 | start the app, or `sb add <name> <port>`; for wildcards, a split-DNS mode that supports them |
 
 Port holders are found with `lsof`, which can't see root-owned processes without sudo.
 If a port is busy and `lsof` can't name the holder, doctor says so and prints the

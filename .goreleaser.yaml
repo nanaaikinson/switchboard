@@ -1,0 +1,61 @@
+# GoReleaser config: archives, SHA256SUMS, and .deb/.rpm packages (nfpm).
+# Used by .github/workflows/release.yml and `make dist`. Archive names and the
+# SHA256SUMS file are what install/install.sh downloads; keep them in sync.
+version: 2
+
+project_name: switchboard
+
+builds:
+  - id: sb
+    main: ./cmd/sb
+    binary: sb
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{ .Tag }}"]
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: sb
+    ids: [sb]
+    name_template: "sb_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    wrap_in_directory: true # sb_<version>_<os>_<arch>/sb, as install.sh expects
+    files: [none*] # the binary only
+
+checksum:
+  name_template: SHA256SUMS
+  algorithm: sha256
+
+nfpms:
+  - id: packages
+    ids: [sb]
+    package_name: switchboard
+    file_name_template: "{{ .ConventionalFileName }}"
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    homepage: https://github.com/nanaaikinson/switchboard
+    maintainer: Nana Kwesi Ofosu-Aikins
+    description: |-
+      Map local ports to trusted HTTPS names.
+      Switchboard routes names such as https://myapp.test to apps on local
+      ports, with a local DNS server, a reverse proxy and a name-constrained
+      local CA. Run 'sb setup' as your user after installing.
+    section: devel
+    scripts:
+      postinstall: install/packaging/postinstall.sh
+      preremove: install/packaging/preremove.sh
+    overrides:
+      deb:
+        recommends: [libnss3-tools]
+      rpm:
+        recommends: [nss-tools]
+
+changelog:
+  use: github-native
+
+release:
+  prerelease: auto

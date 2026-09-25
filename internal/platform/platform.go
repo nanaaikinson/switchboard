@@ -47,6 +47,10 @@ type Platform interface {
 	// listening sockets to the user's daemon. HelperListeners is the daemon side.
 	ServeHelper(ctx context.Context) error
 	HelperListeners(ctx context.Context) ([]net.Listener, error)
+	// SyncHosts asks the helper to list names in its hosts-file block, on
+	// systems where that is the split-DNS fallback. It returns an error
+	// matching errors.ErrUnsupported where split DNS never needs it.
+	SyncHosts(ctx context.Context, names []string) error
 
 	// Diagnostics for 'sb doctor', run as the user. Failures may implement
 	// interface{ Fix() string } with a one-line fix. Unsupported checks

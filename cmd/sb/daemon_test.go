@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -15,6 +17,8 @@ import (
 	"github.com/nanaaikinson/switchboard/internal/api"
 	"github.com/nanaaikinson/switchboard/internal/api/client"
 	"github.com/nanaaikinson/switchboard/internal/config"
+	"github.com/nanaaikinson/switchboard/internal/platform"
+	"github.com/nanaaikinson/switchboard/internal/proxy"
 )
 
 // configDir points SWITCHBOARD_CONFIG_DIR at a temp dir short enough for a socket.
@@ -181,5 +185,69 @@ func TestDaemonRejectsBadConfig(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, api.SocketName)); !os.IsNotExist(err) {
 		t.Error("socket created despite bad config")
+	}
+}
+
+// hostsSpy records SyncHosts calls; every other method panics.
+type hostsSpy struct {
+	platform.Platform
+	got chan []string
+	err error
+}
+
+func (h hostsSpy) SyncHosts(_ context.Context, names []string) error { h.got <- names; return h.err }
+
+func TestHostsSyncerSendsExactNames(t *testing.T) {
+	px, err := proxy.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &hostsSyncer{Proxy: px, next: make(chan []config.Route, 1)}
+	// Two quick changes before the syncer runs: only the latest is sent.
+	if err := h.SetRoutes([]config.Route{{Name: "old.test", Port: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.SetRoutes([]config.Route{{Name: "myapp.test", Port: 1, Wildcard: true}, {Name: "*.w.test", Port: 2}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(px.Routes()) != 2 {
+		t.Fatalf("proxy routes = %v", px.Routes())
+	}
+	spy := hostsSpy{got: make(chan []string, 4)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { h.run(ctx, spy); close(done) }()
+	select {
+	case names := <-spy.got:
+		if strings.Join(names, ",") != "myapp.test" {
+			t.Errorf("synced %v, want only the exact name myapp.test", names)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no sync")
+	}
+	cancel()
+	<-done
+
+	// An invalid table is rejected and never synced.
+	if err := h.SetRoutes([]config.Route{{Name: "bad", Port: 0}}); err == nil {
+		t.Error("invalid routes accepted")
+	}
+	select {
+	case rs := <-h.next:
+		t.Errorf("invalid table queued: %v", rs)
+	default:
+	}
+
+	// On an OS that never needs it, the syncer stops.
+	_ = h.SetRoutes(nil)
+	stopped := make(chan struct{})
+	go func() {
+		h.run(context.Background(), hostsSpy{got: make(chan []string, 1), err: fmt.Errorf("x: %w", errors.ErrUnsupported)})
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(3 * time.Second):
+		t.Fatal("syncer kept running after ErrUnsupported")
 	}
 }

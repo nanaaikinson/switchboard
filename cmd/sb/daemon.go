@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -83,8 +85,9 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 	if err != nil {
 		return fmt.Errorf("load routes from %s: %w", cfgPath, err)
 	}
+	hosts := &hostsSyncer{Proxy: px, next: make(chan []config.Route, 1)}
 	svc, err := api.NewService(api.Options{
-		ConfigPath: cfgPath, Config: cfg, Proxy: px, TLDs: tlds,
+		ConfigPath: cfgPath, Config: cfg, Proxy: hosts, TLDs: tlds,
 		Version: version, HealthInterval: opts.healthInterval,
 	})
 	if err != nil {
@@ -105,6 +108,7 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 	defer cancel()
 	var wg sync.WaitGroup
 	wg.Go(func() { svc.Run(ctx) })
+	wg.Go(func() { hosts.run(ctx, platform.Current()) })
 
 	d, err := dns.New(opts.dnsAddr, tlds)
 	if err != nil {
@@ -253,4 +257,49 @@ func listenerAddrs(lns []net.Listener) []string {
 		out[i] = ln.Addr().String()
 	}
 	return out
+}
+
+// hostsSyncer passes route changes to the proxy, then on to the helper's
+// /etc/hosts block, which is the Linux fallback when there is no split DNS.
+// The latest table wins, and syncing never blocks a route change.
+type hostsSyncer struct {
+	proxy.Proxy
+	next chan []config.Route // capacity 1
+}
+
+// SetRoutes implements api.RouteSetter. Callers are serialized by the service.
+func (h *hostsSyncer) SetRoutes(routes []config.Route) error {
+	if err := h.Proxy.SetRoutes(routes); err != nil {
+		return err
+	}
+	select {
+	case <-h.next: // drop a table the syncer has not picked up yet
+	default:
+	}
+	h.next <- slices.Clone(routes)
+	return nil
+}
+
+func (h *hostsSyncer) run(ctx context.Context, p platform.Platform) {
+	for {
+		var routes []config.Route
+		select {
+		case <-ctx.Done():
+			return
+		case routes = <-h.next:
+		}
+		var names []string
+		for _, r := range routes {
+			if !strings.HasPrefix(r.Name, "*.") { // wildcards cannot go in a hosts file
+				names = append(names, r.Name)
+			}
+		}
+		err := p.SyncHosts(ctx, names)
+		switch {
+		case errors.Is(err, errors.ErrUnsupported):
+			return // this OS never needs it
+		case err != nil:
+			slog.Debug("hosts sync failed", "err", err)
+		}
+	}
 }

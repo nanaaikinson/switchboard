@@ -60,18 +60,19 @@ left, or if they weren't signed by the current CA.
 
 ## Trust
 
-| | System store | Firefox (NSS) |
+| | System store | NSS (Firefox; Chrome on Linux) |
 | --- | --- | --- |
-| Where | `/Library/Keychains/System.keychain`, trusted for SSL and basic X.509 | every Firefox profile with a `cert9.db` |
-| Who changes it | `sudo sb helper trust` / `untrust`, run by `sb trust`, `sb untrust`, `sb setup` and `sb uninstall` | the `sb` command itself, as you |
-| How | [smallstep/truststore](https://github.com/smallstep/truststore) (`security add-trusted-cert`); removal uses `security remove-trusted-cert` and `security delete-certificate` | `certutil` from `brew install nss`; skipped when Firefox isn't installed |
+| macOS | `/Library/Keychains/System.keychain`, trusted for SSL and basic X.509, via [smallstep/truststore](https://github.com/smallstep/truststore) (`security add-trusted-cert`). Removal uses `security remove-trusted-cert` and `security delete-certificate` | every Firefox profile with a `cert9.db`; `certutil` from `brew install nss` |
+| Linux | the distro CA bundle, via truststore: `/usr/local/share/ca-certificates` + `update-ca-certificates` (Debian, Ubuntu), `/etc/pki/ca-trust/source/anchors` + `update-ca-trust` (Fedora, RHEL), or `trust extract-compat` (Arch). On Debian-family systems removal also runs `update-ca-certificates --fresh`, which clears the links it would leave behind | `~/.pki/nssdb` (Chrome, Chromium) and Firefox profiles, including the snap's; `certutil` from `libnss3-tools` or `nss-tools` |
+| Who changes it | `sudo sb helper trust` / `untrust`, run by `sb trust`, `sb untrust`, `sb setup` and `sb uninstall` | the `sb` command itself, as you. Skipped when there are no NSS databases |
 
-Safari, Chrome, curl and Go programs all use the system store. The helper validates the
+On macOS, Safari, Chrome, curl and Go programs use the system store. On Linux, curl,
+Go and most CLI tools use the system bundle, while Chrome and Firefox use NSS. The helper validates the
 certificate before trusting it; see the security design in
 [setup-macos.md](setup-macos.md).
 
 `sb untrust` removes trust but keeps the CA files, so `sb trust` restores the same CA.
-Linux and Windows trust stores aren't implemented yet.
+The Windows trust store isn't implemented yet.
 
 ## Making a new CA
 

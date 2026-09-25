@@ -191,11 +191,7 @@ main() {
 		;;
 	esac
 
-	if [ "$os" = darwin ]; then
-		say "next: run '$sb setup' to finish (asks for your password once). Re-run it after every upgrade."
-	else
-		say "next: run '$sb setup' to finish. System setup is macOS-only for now; on $os, run '$sb daemon' yourself."
-	fi
+	say "next: run '$sb setup' to finish (asks for your password once). Re-run it after every upgrade."
 }
 
 main "$@"

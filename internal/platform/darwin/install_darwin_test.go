@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nanaaikinson/switchboard/internal/platform/posix"
 )
 
 // fakeLaunchctl tracks loaded jobs and records every call. It never runs
@@ -92,7 +94,7 @@ func newEnv(t *testing.T) *env {
 		},
 	})
 	var err error
-	if e.gid, err = e.p.userGID(); err != nil {
+	if e.gid, err = posix.UserGID(os.Getuid()); err != nil {
 		t.Fatal(err)
 	}
 	return e

@@ -44,17 +44,23 @@ func newSetupCmd() *cobra.Command {
 		Long: `Configure the system so Switchboard names work. sb setup prints every change,
 asks for confirmation, then runs a single 'sudo sb helper install' that:
 
-  - writes /etc/resolver/<tld> so the OS sends .<tld> lookups to Switchboard
-  - installs a root LaunchDaemon (the helper) that binds ports 80 and 443
-    and hands them to your daemon
-  - installs a LaunchAgent that runs 'sb daemon' as you at login
-  - trusts Switchboard's local CA (created now if needed) in the System
-    keychain, so HTTPS names have no certificate warnings
+  - sends .<tld> lookups to Switchboard's DNS server
+      macOS: /etc/resolver/<tld>
+      Linux: a systemd-resolved or NetworkManager dnsmasq drop-in, or, if
+             neither is in use, a block in /etc/hosts (exact names only;
+             wildcard routes don't resolve)
+  - installs the privileged helper as a root service (a launchd daemon or a
+    systemd unit) that binds ports 80 and 443 and hands them to your daemon
+  - installs a per-user service (a LaunchAgent or a systemd user unit) that
+    runs 'sb daemon' as you
+  - trusts Switchboard's local CA (created now if needed) in the system trust
+    store, so HTTPS names have no certificate warnings
 
-It then adds the CA to your Firefox stores as you, not root.
+It then adds the CA to your browsers' NSS stores (Firefox; Chrome on Linux)
+as you, not root.
 
 Run it as your normal user, not with sudo. Undo everything with 'sb uninstall'.
-macOS only for now.`,
+macOS and Linux (systemd) only for now.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if os.Geteuid() == 0 {
@@ -96,10 +102,10 @@ func newUninstallCmd() *cobra.Command {
 		Use:   "uninstall",
 		Short: "Remove every system change made by 'sb setup'",
 		Long: `Reverse every step of 'sb setup' with a single 'sudo sb helper uninstall':
-unload and remove the LaunchAgent and helper LaunchDaemon, the helper binary,
-its logs and socket, /etc/resolver/<tld> if Switchboard wrote it, and the
-local CA from the System keychain. Then remove the CA from your Firefox
-stores, as you.
+stop and remove the daemon's user service and the helper's root service, the
+helper binary, its logs and socket, the split-DNS config if Switchboard wrote
+it, and the local CA from the system trust store. Then remove the CA from
+your browsers' NSS stores, as you.
 
 Safe to run more than once; anything already gone is skipped. Your routes and
 the CA files in the config dir are kept; delete that folder to remove them too.`,
@@ -193,10 +199,11 @@ func isSafeShellChar(r rune) bool {
 func newHelperCmd() *cobra.Command {
 	helper := &cobra.Command{
 		Use:   "helper",
-		Short: "Privileged helper (internal; run by sb setup and launchd)",
+		Short: "Privileged helper (internal; run by sb setup and the service manager)",
 		Long: `The privileged helper. It only binds ports 80 and 443 and passes them to
-your daemon, writes/removes split-DNS config, installs/removes the launchd
-jobs, and adds/removes the local CA in the system trust store.
+your daemon, writes/removes split-DNS config (including the /etc/hosts block
+on Linux systems without split DNS), installs/removes its services, and
+adds/removes the local CA in the system trust store.
 Run via 'sb setup', 'sb uninstall', 'sb trust' and 'sb untrust', never by hand.`,
 		Hidden: true,
 	}

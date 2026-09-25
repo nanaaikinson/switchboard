@@ -45,7 +45,34 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Shellcheck install script
+      - name: Shellcheck shell scripts
         run: |
           shellcheck --version
-          shellcheck --shell=sh --severity=style install/install.sh
+          shellcheck --shell=sh --severity=style install/install.sh install/packaging/*.sh test/e2e/linux/*.sh
+
+  goreleaser:
+    name: goreleaser check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
+
+  e2e-linux:
+    name: e2e (Linux, systemd)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # sb setup, HTTPS to https://probe.test, sb doctor and sb uninstall, as a
+      # normal user inside a privileged Ubuntu container that boots systemd;
+      # once with systemd-resolved and once with the /etc/hosts fallback.
+      - name: End-to-end test
+        run: make test-e2e-linux

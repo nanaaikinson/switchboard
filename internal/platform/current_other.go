@@ -30,14 +30,15 @@ func (unsupported) ServeHelper(context.Context) error { return errUnsupported }
 func (unsupported) HelperListeners(context.Context) ([]net.Listener, error) {
 	return nil, errUnsupported
 }
-func (unsupported) TrustPlan(string) []string           { return nil }
-func (unsupported) UntrustPlan(string) []string         { return nil }
-func (unsupported) TrustCA(string) error                { return errUnsupported }
-func (unsupported) UntrustCA(string) error              { return errUnsupported }
-func (unsupported) TrustNSS(string) error               { return errUnsupported }
-func (unsupported) UntrustNSS(string) error             { return errUnsupported }
-func (unsupported) HelperRunning(context.Context) error { return errUnsupported }
-func (unsupported) CheckResolver(string, int) error     { return errUnsupported }
+func (unsupported) TrustPlan(string) []string                 { return nil }
+func (unsupported) UntrustPlan(string) []string               { return nil }
+func (unsupported) TrustCA(string) error                      { return errUnsupported }
+func (unsupported) UntrustCA(string) error                    { return errUnsupported }
+func (unsupported) TrustNSS(string) error                     { return errUnsupported }
+func (unsupported) UntrustNSS(string) error                   { return errUnsupported }
+func (unsupported) HelperRunning(context.Context) error       { return errUnsupported }
+func (unsupported) SyncHosts(context.Context, []string) error { return errUnsupported }
+func (unsupported) CheckResolver(string, int) error           { return errUnsupported }
 func (unsupported) LookupHost(context.Context, string) ([]string, error) {
 	return nil, errUnsupported
 }

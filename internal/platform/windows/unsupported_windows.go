@@ -6,7 +6,7 @@ import (
 	"net"
 )
 
-// ErrUnsupported is returned by system setup, which is macOS-only so far. It
+// ErrUnsupported is returned by system setup, which is macOS and Linux only so far. It
 // matches errors.ErrUnsupported.
 var ErrUnsupported error = unsupportedError{}
 
@@ -71,3 +71,6 @@ func (Platform) TrustNSS(string) error { return ErrUnsupported }
 
 // UntrustNSS is unsupported.
 func (Platform) UntrustNSS(string) error { return ErrUnsupported }
+
+// SyncHosts is unsupported.
+func (Platform) SyncHosts(context.Context, []string) error { return ErrUnsupported }

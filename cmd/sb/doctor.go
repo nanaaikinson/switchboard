@@ -118,7 +118,7 @@ func runDoctor(ctx context.Context, p platform.Platform) []checkResult {
 		}
 	}
 	for _, tld := range tlds {
-		resolver := fromErr("resolver ."+tld, fmt.Sprintf("sends .%s to 127.0.0.1:%d", tld, dnsPort),
+		resolver := fromErr("resolver ."+tld, fmt.Sprintf("split DNS for .%s is in place", tld),
 			p.CheckResolver(tld, dnsPort), "Run 'sb setup'.")
 		rs = append(rs, resolver)
 
@@ -131,7 +131,7 @@ func runDoctor(ctx context.Context, p platform.Platform) []checkResult {
 		case resolver.status == checkFail:
 			fix = "Fix the resolver file first (see above)."
 		default:
-			fix = "Flush the DNS cache (macOS: sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder), then re-run 'sb doctor'."
+			fix = "Flush the DNS cache (macOS: sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder; Linux: resolvectl flush-caches), then re-run 'sb doctor'."
 		}
 		rs = append(rs, checkLookup(ctx, p, "probe."+tld, fix))
 	}
@@ -145,7 +145,7 @@ func runDoctor(ctx context.Context, p platform.Platform) []checkResult {
 		rs = append(rs, checkPort(ctx, p, port, st, up))
 	}
 
-	return append(rs, checkRoutes(ctx, st, up)...)
+	return append(rs, checkRoutes(ctx, p, st, up)...)
 }
 
 // daemonStatus asks the daemon on the control socket for its status.
@@ -296,9 +296,10 @@ func portBusy(ctx context.Context, port int) bool {
 	return false
 }
 
-// checkRoutes dials every route's upstream port. Routes come from the daemon,
-// or from the config file when the daemon is down.
-func checkRoutes(ctx context.Context, st api.Status, up bool) []checkResult {
+// checkRoutes dials every route's upstream port, and checks that names under
+// wildcard routes resolve (they don't with an /etc/hosts fallback). Routes
+// come from the daemon, or from the config file when the daemon is down.
+func checkRoutes(ctx context.Context, p platform.Platform, st api.Status, up bool) []checkResult {
 	var routes []config.Route
 	if up {
 		for _, r := range st.Routes {
@@ -332,6 +333,15 @@ func checkRoutes(ctx context.Context, st api.Status, up bool) []checkResult {
 				return
 			}
 			_ = c.Close()
+			if base, star := strings.CutPrefix(r.Name, "*."); star || r.Wildcard {
+				probe := "sb-probe." + base
+				addrs, err := p.LookupHost(ctx, probe)
+				if !errors.Is(err, errors.ErrUnsupported) && !slices.Contains(addrs, "127.0.0.1") {
+					rs[i] = checkResult{checkFail, name, fmt.Sprintf("names under it don't resolve (%s: %v %v)", probe, addrs, err),
+						"Your split DNS only covers exact names (the /etc/hosts fallback). Enable systemd-resolved, then run 'sb uninstall' and 'sb setup'."}
+					return
+				}
+			}
 			rs[i] = pass(name, "upstream "+upstream+" is up")
 		})
 	}

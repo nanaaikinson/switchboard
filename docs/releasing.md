@@ -5,14 +5,19 @@ Releases are cut by pushing a [semver](https://semver.org) tag. The
 
 1. Runs the full CI workflow (build, test, lint on macOS and Ubuntu).
 2. Rejects the tag unless it matches `vMAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]`.
-3. Runs `make dist`, which cross-compiles `sb` for darwin, linux and windows on
-   amd64 and arm64 with `main.version` set to the tag, then writes
-   `SHA256SUMS` (SHA-256), which [install.sh](../install/install.sh) checks.
-4. Publishes signed build provenance for every archive (GitHub artifact attestations).
-   This step is skipped while the repository is private, because GitHub does not offer
-   attestations for user-owned private repositories.
-5. Creates a GitHub release with generated notes. Tags with a pre-release part
-   (`v0.2.0-rc.1`) are marked as pre-releases.
+3. Runs [GoReleaser](https://goreleaser.com) with [.goreleaser.yaml](../.goreleaser.yaml).
+   It cross-compiles `sb` for darwin, linux and windows on amd64 and arm64, with
+   `main.version` set to the tag. It builds:
+   - `sb_<version>_<os>_<arch>.tar.gz` (`.zip` on Windows), each holding
+     `sb_<version>_<os>_<arch>/sb`;
+   - `.deb` and `.rpm` packages named `switchboard`, which install `/usr/bin/sb`;
+   - `SHA256SUMS` over all of them, which [install.sh](../install/install.sh) checks.
+
+   It then creates the GitHub release with generated notes. Tags with a pre-release
+   part (`v0.2.0-rc.1`) are marked as pre-releases.
+4. Publishes signed build provenance for every archive and package (GitHub artifact
+   attestations). This step is skipped while the repository is private, because GitHub
+   does not offer attestations for user-owned private repositories.
 
 ## Cutting a release
 
@@ -22,7 +27,9 @@ git tag -a v0.1.0 -m "v0.1.0"
 git push origin v0.1.0
 ```
 
-Build the same archives locally with `make dist VERSION=v0.1.0`.
+Build the same artifacts locally, without publishing, with `make dist`. It needs
+GoReleaser v2 installed. `goreleaser check` validates the config; CI runs it on every
+push.
 
 Verify a downloaded archive:
 

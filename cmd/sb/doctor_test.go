@@ -118,7 +118,7 @@ func TestDoctorAllPass(t *testing.T) {
 	wantLines(t, out,
 		fmt.Sprintf("[PASS] port %d: served by Switchboard on 127.0.0.1:%d", hp, hp),
 		"[PASS] helper: running",
-		fmt.Sprintf("[PASS] resolver .test: sends .test to 127.0.0.1:%d", dnsPortOf(t, dir)),
+		"[PASS] resolver .test: split DNS for .test is in place",
 		"[PASS] probe.test: resolves to 127.0.0.1",
 		fmt.Sprintf("[PASS] port %d: served by Switchboard on 127.0.0.1:%d", px, px),
 		fmt.Sprintf("[PASS] port %d: free (not used by Switchboard)", free),
@@ -133,12 +133,6 @@ func TestDoctorAllPass(t *testing.T) {
 	if !strings.HasPrefix(out, "[PASS] daemon: running ") {
 		t.Errorf("daemon line: %q", out)
 	}
-}
-
-func dnsPortOf(t *testing.T, dir string) int {
-	t.Helper()
-	port, _ := portOf(status(t, dir).DNS.Addrs[0])
-	return port
 }
 
 func status(t *testing.T, dir string) api.Status {
@@ -198,6 +192,7 @@ func TestDoctorFailures(t *testing.T) {
 	startDaemon(t, daemonOptions{})
 	dead := freePort(t)
 	addRoute(t, dir, "api.myapp", dead)
+	addRoute(t, dir, "*.w", live(t))
 	named, hidden := busyPort(t), busyPort(t)
 	useDiag(t, fakeDiag{
 		helperErr:   fixErr{"not installed", "Run 'sb setup'."},
@@ -209,8 +204,8 @@ func TestDoctorFailures(t *testing.T) {
 	out, err := run(t, "doctor")
 	// doctorRoots is nil, so the probe is verified against the system trust
 	// store, which does not trust this test's CA.
-	if err == nil || err.Error() != "7 of 9 checks failed" {
-		t.Fatalf("err = %v, want 7 of 9 checks failed\n%s", err, out)
+	if err == nil || err.Error() != "8 of 10 checks failed" {
+		t.Fatalf("err = %v, want 8 of 10 checks failed\n%s", err, out)
 	}
 	wantLines(t, out,
 		"[FAIL] helper: not installed",
@@ -225,7 +220,17 @@ func TestDoctorFailures(t *testing.T) {
 		fmt.Sprintf("[FAIL] port %d: held by a process only visible with sudo", hidden),
 		fmt.Sprintf("[FAIL] api.myapp.test: nothing listening on 127.0.0.1:%d", dead),
 		fmt.Sprintf("       fix: Start the app on port %d, or point the route at another port: sb add api.myapp.test <port>", dead),
+		"[FAIL] *.w.test: names under it don't resolve (sb-probe.w.test: [10.0.0.1] <nil>)",
+		"       fix: Your split DNS only covers exact names (the /etc/hosts fallback). Enable systemd-resolved, then run 'sb uninstall' and 'sb setup'.",
 	)
+}
+
+// live starts an upstream that accepts connections until the test ends.
+func live(t *testing.T) int {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(srv.Close)
+	return srv.Listener.Addr().(*net.TCPAddr).Port
 }
 
 func TestDoctorDaemonDown(t *testing.T) {
