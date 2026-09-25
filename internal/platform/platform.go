@@ -3,56 +3,14 @@
 package platform
 
 import (
-	"context"
 	"fmt"
-	"net"
 	"net/url"
-	"os"
-	"path/filepath"
 )
 
 // Platform is the OS-specific functionality Switchboard needs.
 type Platform interface {
 	// OpenURL opens an http(s) URL in the user's default browser.
 	OpenURL(rawURL string) error
-
-	// Validate checks Options before any privileged change.
-	Validate() error
-	// InstallPlan and UninstallPlan describe, in order, what setup and
-	// uninstall change, so sb can show them before asking for sudo.
-	InstallPlan(tld string, dnsPort int) []string
-	UninstallPlan(tld string) []string
-
-	// Privileged; run by 'sb helper' as root.
-	InstallResolver(tld string, port int) error
-	RemoveResolver(tld string) error
-	InstallService() error
-	RemoveService() error
-
-	// ServeHelper is the root side of the helper protocol: it hands the HTTP
-	// listening sockets to the user's daemon. HelperListeners is the daemon side.
-	ServeHelper(ctx context.Context) error
-	HelperListeners(ctx context.Context) ([]net.Listener, error)
-}
-
-// Options identifies the user Switchboard is installed for.
-type Options struct {
-	UID    int
-	Home   string
-	SbPath string // absolute path of the sb binary the user runs
-}
-
-// Current returns the platform for the current process's user and binary.
-func Current() Platform {
-	o := Options{UID: os.Getuid()}
-	o.Home, _ = os.UserHomeDir()
-	if exe, err := os.Executable(); err == nil {
-		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
-			exe = resolved
-		}
-		o.SbPath = exe
-	}
-	return New(o)
 }
 
 // OpenURL validates rawURL and opens it with the current platform.

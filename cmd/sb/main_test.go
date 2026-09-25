@@ -14,6 +14,7 @@ func TestCommands(t *testing.T) {
 		wantErr error
 		errText string
 	}{
+		{name: "helper", args: []string{"helper"}, wantErr: errNotImplemented},
 		{name: "doctor", args: []string{"doctor"}, wantErr: errNotImplemented},
 		{name: "add missing port", args: []string{"add", "myapp"}, errText: "accepts 2 arg(s)"},
 		{name: "add non-numeric port", args: []string{"add", "myapp", "http"}, errText: "is not a number"},

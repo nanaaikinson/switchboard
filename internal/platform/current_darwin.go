@@ -4,7 +4,5 @@ package platform
 
 import "github.com/nanaaikinson/switchboard/internal/platform/darwin"
 
-// New returns the macOS platform for o.
-func New(o Options) Platform {
-	return darwin.New(darwin.Options{UID: o.UID, Home: o.Home, SbPath: o.SbPath})
-}
+// Current returns the platform for this build.
+func Current() Platform { return darwin.Platform{} }
