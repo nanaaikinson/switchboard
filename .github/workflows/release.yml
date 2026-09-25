@@ -1,22 +1,35 @@
 name: Release
 
+# Runs for a pushed vX.Y.Z tag, and is called by autotag.yml, whose own tag
+# pushes can't trigger workflows (GitHub ignores events from GITHUB_TOKEN).
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      skip_ci:
+        description: the caller already ran CI on this commit
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
   ci:
+    if: ${{ !inputs.skip_ci }}
     uses: ./.github/workflows/ci.yml
 
   release:
     needs: ci
+    if: ${{ always() && (needs.ci.result == 'success' || needs.ci.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write     # create the release
@@ -25,11 +38,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0 # GoReleaser builds the changelog from history
 
       - name: Validate semver tag
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
           if [[ ! "$TAG" =~ $re ]]; then
@@ -51,6 +65,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          GORELEASER_CURRENT_TAG: ${{ inputs.tag || github.ref_name }}
 
       # Attestations are unavailable for user-owned private repositories.
       - uses: actions/attest-build-provenance@v4

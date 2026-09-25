@@ -1,8 +1,7 @@
 name: CI
 
+# Pushes to main run this through autotag.yml, which releases afterwards.
 on:
-  push:
-    branches: [main]
   pull_request:
   workflow_call:
 
@@ -48,7 +47,10 @@ jobs:
       - name: Shellcheck shell scripts
         run: |
           shellcheck --version
-          shellcheck --shell=sh --severity=style install/install.sh install/packaging/*.sh test/e2e/linux/*.sh
+          shellcheck --shell=sh --severity=style install/install.sh install/packaging/*.sh test/e2e/linux/*.sh .github/scripts/*.sh test/release/*.sh
+
+      - name: Test the release version script
+        run: sh test/release/next-version-test.sh
 
   goreleaser:
     name: goreleaser check

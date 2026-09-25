@@ -19,7 +19,8 @@ lint:
 	golangci-lint run
 
 lint-sh:
-	shellcheck --shell=sh --severity=style install/install.sh install/packaging/*.sh test/e2e/linux/*.sh
+	shellcheck --shell=sh --severity=style install/install.sh install/packaging/*.sh test/e2e/linux/*.sh .github/scripts/*.sh test/release/*.sh
+	sh test/release/next-version-test.sh >/dev/null
 
 vuln:
 	govulncheck ./...

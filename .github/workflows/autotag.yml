@@ -1,0 +1,60 @@
+name: Auto-tag
+
+# Every push to main: run CI, then tag the next version from the conventional
+# commits since the last release (see .github/scripts/next-version.sh) and
+# release it. Pushes with only docs/chore/ci/test/refactor commits don't
+# release. Pushing a vX.Y.Z tag by hand still releases it (release.yml).
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One at a time, in push order, so two quick pushes can't pick the same tag.
+concurrency:
+  group: autotag
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  tag:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the tag
+    outputs:
+      tag: ${{ steps.next.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the script reads tags and history
+
+      - name: Tag the next version
+        id: next
+        run: |
+          tag=$(sh .github/scripts/next-version.sh)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ -z "$tag" ]; then
+            echo "No feat, fix, perf or breaking commits since the last release; nothing to tag."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "$tag"
+          git push origin "$tag"
+          echo "Tagged $tag" >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    needs: tag
+    if: ${{ needs.tag.outputs.tag != '' }}
+    permissions:
+      contents: write     # create the release
+      id-token: write     # sign build provenance
+      attestations: write # publish build provenance
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}
+      skip_ci: true
