@@ -48,7 +48,9 @@ jobs:
       - name: Build archives
         run: make dist VERSION="${{ github.ref_name }}"
 
+      # Attestations are unavailable for user-owned private repositories.
       - uses: actions/attest-build-provenance@v4
+        if: ${{ !github.event.repository.private }}
         with:
           subject-path: "dist/*.tar.gz, dist/*.zip"
 
