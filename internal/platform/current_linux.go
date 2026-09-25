@@ -4,5 +4,5 @@ package platform
 
 import "github.com/nanaaikinson/switchboard/internal/platform/linux"
 
-// Current returns the platform for this build.
-func Current() Platform { return linux.Platform{} }
+// New returns the linux platform. System setup is not implemented yet.
+func New(Options) Platform { return linux.Platform{} }

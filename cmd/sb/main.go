@@ -36,15 +36,7 @@ Run 'sb setup' once, then 'sb add <name> <port>' for each app.`,
 	}
 	root.AddCommand(
 		newDaemonCmd(),
-		stub(&cobra.Command{
-			Use:   "helper",
-			Short: "Run the privileged helper (internal)",
-			Long: `Run the privileged helper. It binds ports 80/443, writes split-DNS config
-and manages the local CA in trust stores. It is started by the OS service
-manager and accepts commands only from the daemon; do not run it by hand.`,
-			Args:   cobra.NoArgs,
-			Hidden: true,
-		}),
+		newHelperCmd(),
 		newAddCmd(),
 		newRmCmd(),
 		newLsCmd(),
@@ -54,20 +46,8 @@ manager and accepts commands only from the daemon; do not run it by hand.`,
 			Short: "Diagnose DNS, ports, certificates and conflicting tools",
 			Args:  cobra.NoArgs,
 		}),
-		stub(&cobra.Command{
-			Use:   "setup",
-			Short: "One-time system setup (requires admin rights)",
-			Long: `Install the privileged helper, register split DNS for the Switchboard TLD
-and trust the local CA. Asks for admin rights once. Undo with 'sb uninstall'.`,
-			Args: cobra.NoArgs,
-		}),
-		stub(&cobra.Command{
-			Use:   "uninstall",
-			Short: "Remove every system change made by Switchboard",
-			Long: `Remove the helper, split-DNS config, local CA and background services
-installed by 'sb setup', leaving the system as it was.`,
-			Args: cobra.NoArgs,
-		}),
+		newSetupCmd(),
+		newUninstallCmd(),
 	)
 	return root
 }
