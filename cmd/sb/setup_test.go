@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -275,5 +277,93 @@ func TestShellJoin(t *testing.T) {
 	want := `/opt/sb helper --home '/Users/Jane Doe' 'it'\''s'`
 	if got != want {
 		t.Errorf("shellJoin = %s, want %s", got, want)
+	}
+}
+
+// fakeAdmin replaces runAdmin for the test and records each command. It never
+// shows a password dialog.
+func fakeAdmin(t *testing.T, err error) *[][]string {
+	t.Helper()
+	var calls [][]string
+	orig := runAdmin
+	runAdmin = func(c *exec.Cmd) error {
+		calls = append(calls, c.Args)
+		return err
+	}
+	t.Cleanup(func() { runAdmin = orig })
+	return &calls
+}
+
+func TestSetupPrintPlan(t *testing.T) {
+	spy, caCert := setupEnv(t)
+	sudo, admin := fakeSudo(t, nil), fakeAdmin(t, nil)
+	out, err := runWithInput(t, "", "setup", "--print-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan struct {
+		Title   string   `json:"title"`
+		Changes []string `json:"changes"`
+		Command []string `json:"command"`
+		Notes   string   `json:"notes"`
+	}
+	if err := json.Unmarshal([]byte(out), &plan); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, out)
+	}
+	if len(plan.Changes) != 6 || plan.Command[1] != "helper" || plan.Command[2] != "install" || !strings.Contains(plan.Notes, "SHA-256") {
+		t.Errorf("plan %+v", plan)
+	}
+	if !strings.Contains(strings.Join(plan.Command, " "), "--ca-cert "+caCert) {
+		t.Errorf("command %v", plan.Command)
+	}
+	if len(*sudo)+len(*admin)+len(spy.trusted) != 0 {
+		t.Errorf("--print-plan changed something: sudo %v admin %v nss %v", *sudo, *admin, spy.trusted)
+	}
+}
+
+func TestSetupWithAdminDialog(t *testing.T) {
+	spy, caCert := setupEnv(t)
+	sudo, admin := fakeSudo(t, nil), fakeAdmin(t, nil)
+	out, err := runWithInput(t, "", "setup", "--yes", "--admin-dialog")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if len(*sudo) != 0 || len(*admin) != 1 {
+		t.Fatalf("sudo %v, admin %v", *sudo, *admin)
+	}
+	args := (*admin)[0]
+	if args[0] != "/usr/bin/osascript" || !strings.Contains(args[2], "'helper' 'install'") ||
+		!strings.Contains(args[2], "with administrator privileges") || !strings.Contains(args[2], "Switchboard wants to set up .test names") {
+		t.Errorf("osascript args %q", args)
+	}
+	if !strings.Contains(out, "your system asks for your password") || strings.Contains(out, "sudo ") {
+		t.Errorf("output:\n%s", out)
+	}
+	if len(spy.trusted) != 1 || spy.trusted[0] != caCert {
+		t.Errorf("NSS trust after the dialog: %v", spy.trusted)
+	}
+
+	// A cancelled dialog is an error, and nothing else happens.
+	fakeAdmin(t, errors.New("exit status 1"))
+	_, err = runWithInput(t, "", "setup", "--yes", "--admin-dialog")
+	if err == nil || !strings.Contains(err.Error(), "cancelled the password dialog") {
+		t.Errorf("cancel: %v", err)
+	}
+	if len(spy.trusted) != 1 {
+		t.Errorf("NSS changed after a cancelled dialog: %v", spy.trusted)
+	}
+}
+
+func TestTrustAndUninstallAcceptAdminDialog(t *testing.T) {
+	setupEnv(t)
+	fakeSudo(t, nil)
+	admin := fakeAdmin(t, nil)
+	for _, args := range [][]string{{"trust", "--yes", "--admin-dialog"}, {"untrust", "--yes", "--admin-dialog"}, {"uninstall", "--yes", "--admin-dialog"}} {
+		if out, err := runWithInput(t, "", args...); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	if len(*admin) != 3 || !strings.Contains((*admin)[2][2], "'helper' 'uninstall'") {
+		t.Errorf("admin calls %q", *admin)
 	}
 }

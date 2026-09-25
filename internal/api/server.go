@@ -86,6 +86,22 @@ func Handler(s *Service) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, logs)
 	})
+	mux.HandleFunc("POST /v1/pause", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Paused bool `json:"paused"`
+		}
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("decode pause request: %w", err))
+			return
+		}
+		if err := s.SetPaused(req.Paused); err != nil {
+			writeError(w, statusFor(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, req)
+	})
 	mux.HandleFunc("GET /v1/ca", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, s.CA())
 	})

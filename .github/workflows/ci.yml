@@ -47,7 +47,7 @@ jobs:
       - name: Shellcheck shell scripts
         run: |
           shellcheck --version
-          shellcheck --shell=sh --severity=style install/install.sh install/packaging/*.sh test/e2e/linux/*.sh .github/scripts/*.sh test/release/*.sh
+          shellcheck --shell=sh --severity=style install/install.sh install/packaging/*.sh test/e2e/linux/*.sh .github/scripts/*.sh test/release/*.sh app/tray/scripts/*.sh
 
       - name: Test the release version script
         run: sh test/release/next-version-test.sh
@@ -95,6 +95,43 @@ jobs:
         with:
           name: playwright-report
           path: ui/dashboard/playwright-report
+
+  tray:
+    name: tray app (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: app/tray
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/tray/src-tauri
+
+      # Tauri's build script needs the sidecar to exist.
+      - name: Build the sb sidecar
+        run: sh scripts/build-sidecar.sh
+
+      - name: Format, lint and test
+        working-directory: app/tray/src-tauri
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
 
   goreleaser:
     name: goreleaser check

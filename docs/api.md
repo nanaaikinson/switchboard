@@ -33,6 +33,7 @@ with `*.`.
 | `POST /v1/apply`           | `ApplyRequest` | `200`, `ApplyResult`                                                       | `400` for a relative `file`, a bad name or port, or a name listed twice |
 | `GET /v1/routes/{name}/logs` | none  | `200`, `[AccessLog]`: the route's last 100 requests, oldest first                | `404` if there is no such route                                |
 | `GET /v1/ca`               | none    | `200`, `CAInfo`                                                                   | none                                                           |
+| `POST /v1/pause`           | `{"paused": true}` | `200`, the same: every route answers 503 "Switchboard is paused" until `{"paused": false}` or a daemon restart. The dashboard keeps working. | `400` for a bad body |
 | `POST /v1/dashboard/login` | none    | `200`, `{"token": "…"}`: a one-time dashboard sign-in token ([dashboard.md](dashboard.md)); socket only | none                  |
 | `GET /v1/status`           | none    | `200`, `Status`                                                                   | none                                                           |
 | `GET /v1/events`           | none    | `200`, `text/event-stream`                                                        | none                                                           |
@@ -84,6 +85,7 @@ the proxy is rolled back and the request returns `500`.
   "https": {"addrs": ["127.0.0.1:443", "[::1]:443"], "listening": true},
   "docker": {"enabled": true, "connected": true, "endpoint": "unix:///var/run/docker.sock",
              "skipped": [{"container": "shop-worker-1", "reason": "it publishes 2 ports ..."}]},
+  "paused": false,
   "routes": [RouteStatus, ...]
 }
 ```
@@ -104,8 +106,9 @@ event: route.added
 data: {"type":"route.added","route":{"name":"myapp.test","port":7000,...,"health":"unknown"}}
 ```
 
-The event types are `route.added`, `route.updated`, `route.removed` and
-`health.changed`. A `health.changed` event is sent once for each route on the port
+The event types are `route.added`, `route.updated`, `route.removed`,
+`health.changed`, and `paused.changed` (which has `"paused": true|false` and an empty
+`route`). A `health.changed` event is sent once for each route on the port
 whose health changed. A client that falls more than 32 events behind loses events
 rather than slowing down route changes, so reload `GET /v1/status` after reconnecting.
 

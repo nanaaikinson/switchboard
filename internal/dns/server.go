@@ -75,22 +75,38 @@ func (s *Server) TLDs() []string {
 
 // Listen binds UDP and TCP on the same port. With port 0, UDP picks the port.
 func (s *Server) Listen() error {
-	pc, err := net.ListenPacket("udp", s.addr)
-	if err != nil {
-		return fmt.Errorf("dns: listen udp %s: %w; is another DNS server using this port?", s.addr, err)
+	host, want, _ := net.SplitHostPort(s.addr)
+	// UDP and TCP share one port number. With port 0 the UDP port is random,
+	// and that number may be taken for TCP; then try another.
+	attempts := 1
+	if want == "0" {
+		attempts = 10
 	}
-	host, _, _ := net.SplitHostPort(s.addr)
-	_, port, _ := net.SplitHostPort(pc.LocalAddr().String())
-	ln, err := net.Listen("tcp", net.JoinHostPort(host, port))
-	if err != nil {
-		_ = pc.Close()
-		return fmt.Errorf("dns: listen tcp %s: %w", net.JoinHostPort(host, port), err)
+	var err error
+	for range attempts {
+		var pc net.PacketConn
+		pc, err = net.ListenPacket("udp", s.addr)
+		if err != nil {
+			return fmt.Errorf("dns: listen udp %s: %w; is another DNS server using this port?", s.addr, err)
+		}
+		_, port, _ := net.SplitHostPort(pc.LocalAddr().String())
+		var ln net.Listener
+		ln, err = listenTCP("tcp", net.JoinHostPort(host, port))
+		if err != nil {
+			_ = pc.Close()
+			err = fmt.Errorf("dns: listen tcp %s: %w", net.JoinHostPort(host, port), err)
+			continue
+		}
+		s.pc, s.ln = pc, ln
+		s.udp = &dns.Server{PacketConn: pc, Handler: s}
+		s.tcp = &dns.Server{Listener: ln, Handler: s}
+		return nil
 	}
-	s.pc, s.ln = pc, ln
-	s.udp = &dns.Server{PacketConn: pc, Handler: s}
-	s.tcp = &dns.Server{Listener: ln, Handler: s}
-	return nil
+	return err
 }
+
+// listenTCP is net.Listen; swapped in tests.
+var listenTCP = net.Listen
 
 // Addr returns the bound address after Listen, else the configured one.
 func (s *Server) Addr() string {

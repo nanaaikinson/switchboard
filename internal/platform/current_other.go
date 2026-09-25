@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os/exec"
 	"runtime"
 )
 
@@ -18,7 +19,10 @@ func (unsupportedError) Is(target error) bool { return target == errors.ErrUnsup
 
 type unsupported struct{}
 
-func (unsupported) OpenURL(string) error              { return errUnsupported }
+func (unsupported) OpenURL(string) error { return errUnsupported }
+func (unsupported) AdminCommand([]string, string) (*exec.Cmd, error) {
+	return nil, errUnsupported
+}
 func (unsupported) Validate() error                   { return errUnsupported }
 func (unsupported) InstallPlan(string, int) []string  { return nil }
 func (unsupported) UninstallPlan(string) []string     { return nil }

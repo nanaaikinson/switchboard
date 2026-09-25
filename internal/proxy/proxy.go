@@ -40,6 +40,7 @@ type ReverseProxy struct {
 	table     atomic.Pointer[table]
 	transport http.RoundTripper
 	logs      accessLogs
+	paused    atomic.Bool
 }
 
 var _ Proxy = (*ReverseProxy)(nil)
@@ -107,6 +108,9 @@ func (p *ReverseProxy) SetRoutes(routes []config.Route) error {
 	return nil
 }
 
+// SetPaused makes every route answer 503 while paused is true.
+func (p *ReverseProxy) SetPaused(paused bool) { p.paused.Store(paused) }
+
 // Logs implements Proxy.
 func (p *ReverseProxy) Logs(name string) []AccessLog { return p.logs.get(name) }
 
@@ -132,6 +136,10 @@ func (p *ReverseProxy) Lookup(host string) (config.Route, bool, bool) {
 func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	t := p.table.Load()
 	host := normalizeHost(r.Host)
+	if p.paused.Load() {
+		pausedPage(w)
+		return
+	}
 	if b := t.lookup(host); b != nil {
 		rec := &statusRecorder{ResponseWriter: w}
 		start := time.Now()

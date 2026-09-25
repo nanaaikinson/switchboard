@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -37,7 +38,7 @@ func defaultDNSPort() int {
 }
 
 func newSetupCmd() *cobra.Command {
-	var yes bool
+	var f privFlags
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "One-time system setup (asks for your password once)",
@@ -78,26 +79,30 @@ macOS and Linux (systemd) only for now.`,
 			argv := []string{opts.SbPath, "helper", "install",
 				"--uid", strconv.Itoa(opts.UID), "--home", opts.Home, "--sb-path", opts.SbPath,
 				"--tld", tld, "--dns-port", strconv.Itoa(port), "--ca-cert", ca.CertPath()}
-			plan := append(p.InstallPlan(tld, port), p.TrustPlan(ca.CertPath())...)
-			ok, err := confirm(cmd, "sb setup will make these system changes:", plan, argv, yes,
-				caSummary(ca)+"\nUndo everything later with 'sb uninstall'.")
-			if err != nil || !ok {
-				return err
-			}
-			if err := runSudo(cmd.Context(), argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+			ran, err := runPrivileged(cmd, p, f, privPlan{
+				Title:   "sb setup will make these system changes:",
+				Changes: append(p.InstallPlan(tld, port), p.TrustPlan(ca.CertPath())...),
+				Command: argv,
+				Notes:   caSummary(ca) + "\nUndo everything later with 'sb uninstall'.",
+				Prompt:  "Switchboard wants to set up ." + tld + " names, trusted HTTPS and its background services.",
+			})
+			if err != nil {
 				return fmt.Errorf("setup failed: %w; run 'sb uninstall' to remove anything that was installed", err)
+			}
+			if !ran {
+				return nil
 			}
 			trustNSS(cmd, p, ca.CertPath())
 			fmt.Fprintf(cmd.OutOrStdout(), "Setup complete. Try: sb add myapp 3000 && sb open myapp\n")
 			return nil
 		},
 	}
-	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "do not ask for confirmation")
+	f.register(cmd)
 	return cmd
 }
 
 func newUninstallCmd() *cobra.Command {
-	var yes bool
+	var f privFlags
 	cmd := &cobra.Command{
 		Use:   "uninstall",
 		Short: "Remove every system change made by 'sb setup'",
@@ -130,13 +135,16 @@ the CA files in the config dir are kept; delete that folder to remove them too.`
 				plan = append(plan, p.UntrustPlan(caCert)...)
 				argv = append(argv, "--ca-cert", caCert)
 			}
-			ok, err := confirm(cmd, "sb uninstall will remove:", plan, argv, yes,
-				"Your routes and the CA files in the config dir are kept.")
-			if err != nil || !ok {
-				return err
-			}
-			if err := runSudo(cmd.Context(), argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+			ran, err := runPrivileged(cmd, p, f, privPlan{
+				Title: "sb uninstall will remove:", Changes: plan, Command: argv,
+				Notes:  "Your routes and the CA files in the config dir are kept.",
+				Prompt: "Switchboard wants to remove its system changes.",
+			})
+			if err != nil {
 				return fmt.Errorf("uninstall failed: %w; it is safe to run 'sb uninstall' again", err)
+			}
+			if !ran {
+				return nil
 			}
 			if caCert != "" {
 				untrustNSS(cmd, p, caCert)
@@ -145,7 +153,7 @@ the CA files in the config dir are kept; delete that folder to remove them too.`
 			return nil
 		},
 	}
-	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "do not ask for confirmation")
+	f.register(cmd)
 	return cmd
 }
 
@@ -157,25 +165,70 @@ var currentPlatform = func() (platform.Platform, platform.Options) {
 	return platform.New(o), o
 }
 
-// confirm prints the plan and the exact sudo command, then asks y/N.
-func confirm(cmd *cobra.Command, title string, plan, argv []string, yes bool, footer string) (bool, error) {
+// privFlags are the flags of commands that make one privileged change.
+type privFlags struct{ yes, dialog, printPlan bool }
+
+func (f *privFlags) register(cmd *cobra.Command) {
+	cmd.Flags().BoolVarP(&f.yes, "yes", "y", false, "do not ask for confirmation")
+	cmd.Flags().BoolVar(&f.dialog, "admin-dialog", false,
+		"ask for the administrator password in a system dialog instead of sudo in the terminal (for apps, such as the tray app)")
+	cmd.Flags().BoolVar(&f.printPlan, "print-plan", false, "print what would change, as JSON, and change nothing")
+}
+
+// privPlan is what a privileged command will do.
+type privPlan struct {
+	Title   string   `json:"title"`
+	Changes []string `json:"changes"`
+	Command []string `json:"command"` // run as root
+	Notes   string   `json:"notes"`
+	Prompt  string   `json:"-"` // shown in the admin dialog
+}
+
+// runAdmin runs a command from Platform.AdminCommand. Swapped in tests so
+// they never raise a password dialog.
+var runAdmin = func(c *exec.Cmd) error { return c.Run() }
+
+// runPrivileged shows pl, asks for confirmation unless --yes, then runs
+// pl.Command as root: with sudo, or behind the OS password dialog with
+// --admin-dialog. With --print-plan it only prints pl as JSON. It reports
+// whether the command ran.
+func runPrivileged(cmd *cobra.Command, p platform.Platform, f privFlags, pl privPlan) (bool, error) {
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "%s\n\n", title)
-	for i, line := range plan {
+	if f.printPlan {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return false, enc.Encode(pl)
+	}
+	fmt.Fprintf(out, "%s\n\n", pl.Title)
+	for i, line := range pl.Changes {
 		fmt.Fprintf(out, "  %d. %s\n", i+1, line)
 	}
-	fmt.Fprintf(out, "\nIt runs this one command with sudo (you may be asked for your password):\n\n  sudo %s\n\n%s\n", shellJoin(argv), footer)
-	if yes {
-		return true, nil
+	if f.dialog {
+		fmt.Fprintf(out, "\nIt runs this one command as administrator; your system asks for your password:\n\n  %s\n\n%s\n", shellJoin(pl.Command), pl.Notes)
+	} else {
+		fmt.Fprintf(out, "\nIt runs this one command with sudo (you may be asked for your password):\n\n  sudo %s\n\n%s\n", shellJoin(pl.Command), pl.Notes)
 	}
-	fmt.Fprint(out, "Continue? [y/N] ")
-	line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
+	if !f.yes {
+		fmt.Fprint(out, "Continue? [y/N] ")
+		line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return false, err
+		}
+		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+			fmt.Fprintln(out, "Aborted; nothing was changed.")
+			return false, nil
+		}
+	}
+	if !f.dialog {
+		return true, runSudo(cmd.Context(), pl.Command, cmd.InOrStdin(), out, cmd.ErrOrStderr())
+	}
+	c, err := p.AdminCommand(pl.Command, pl.Prompt)
+	if err != nil {
 		return false, err
 	}
-	if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
-		fmt.Fprintln(out, "Aborted; nothing was changed.")
-		return false, nil
+	c.Stdout, c.Stderr = out, cmd.ErrOrStderr()
+	if err := runAdmin(c); err != nil {
+		return false, fmt.Errorf("%w (if you cancelled the password dialog, nothing was changed)", err)
 	}
 	return true, nil
 }

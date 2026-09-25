@@ -64,6 +64,7 @@ type Status struct {
 	Proxy         Listener      `json:"proxy"` // plain HTTP
 	HTTPS         Listener      `json:"https"`
 	Docker        DockerStatus  `json:"docker"`
+	Paused        bool          `json:"paused"` // every route answers 503; see POST /v1/pause
 	Routes        []RouteStatus `json:"routes"`
 }
 
@@ -73,12 +74,14 @@ const (
 	EventRouteUpdated  = "route.updated"
 	EventRouteRemoved  = "route.removed"
 	EventHealthChanged = "health.changed"
+	EventPausedChanged = "paused.changed" // Route is empty; Paused is set
 )
 
 // Event is one server-sent event.
 type Event struct {
-	Type  string      `json:"type"`
-	Route RouteStatus `json:"route"`
+	Type   string      `json:"type"`
+	Route  RouteStatus `json:"route"`
+	Paused *bool       `json:"paused,omitempty"` // for paused.changed
 }
 
 // Error is the body of every non-2xx response.

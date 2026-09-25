@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os/exec"
 )
 
 // ErrUnsupported is returned by system setup, which is macOS and Linux only so far. It
@@ -74,3 +75,6 @@ func (Platform) UntrustNSS(string) error { return ErrUnsupported }
 
 // SyncHosts is unsupported.
 func (Platform) SyncHosts(context.Context, []string) error { return ErrUnsupported }
+
+// AdminCommand is unsupported.
+func (Platform) AdminCommand([]string, string) (*exec.Cmd, error) { return nil, ErrUnsupported }

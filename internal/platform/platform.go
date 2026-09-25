@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 )
 
@@ -15,6 +16,10 @@ import (
 type Platform interface {
 	// OpenURL opens an http(s) URL in the user's default browser.
 	OpenURL(rawURL string) error
+	// AdminCommand returns a command that runs argv as root after the OS asks
+	// for an administrator's password in a dialog, for callers without a
+	// terminal (the tray app). prompt explains why, where the OS shows one.
+	AdminCommand(argv []string, prompt string) (*exec.Cmd, error)
 
 	// Validate checks Options before any privileged change.
 	Validate() error

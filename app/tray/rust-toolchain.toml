@@ -1,0 +1,4 @@
+# The tray app builds with stable Rust; rustup installs it on first use.
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]

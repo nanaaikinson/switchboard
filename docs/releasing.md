@@ -38,6 +38,9 @@ The release workflow:
 3. Publishes signed build provenance for every archive and package (GitHub artifact
    attestations). This step is skipped while the repository is private, because GitHub
    does not offer attestations for user-owned private repositories.
+4. Then builds the [tray app](tray.md) on macOS (a universal `.dmg`) and Windows (NSIS
+   `.exe` and `.msi`), and uploads them to the same release. They're signed when the
+   signing secrets listed in tray.md are set, and unsigned otherwise.
 
 ## Releasing by hand
 

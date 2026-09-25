@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Add Route</title>
+    <link rel="stylesheet" href="style.css" />
+    <script src="add-route.js" defer></script>
+  </head>
+  <body>
+    <form id="form" novalidate>
+      <label for="name">Name</label>
+      <input id="name" type="text" placeholder="myapp" autocomplete="off" spellcheck="false" autofocus />
+      <div id="name-hint" class="hint muted">Names get .test unless they have it.</div>
+      <label for="port">Port</label>
+      <input id="port" inputmode="numeric" placeholder="3000" autocomplete="off" />
+      <div id="port-hint" class="hint error"></div>
+      <label class="inline"><input id="redirect" type="checkbox" checked /> Force HTTPS (redirect http:// to https://)</label>
+      <p id="error" class="error" role="alert"></p>
+      <div class="actions">
+        <button type="button" id="cancel">Cancel</button>
+        <button type="submit" id="add" class="primary">Add Route</button>
+      </div>
+    </form>
+  </body>
+</html>

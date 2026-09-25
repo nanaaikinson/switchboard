@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Set Up Switchboard</title>
+    <link rel="stylesheet" href="style.css" />
+    <script src="wizard.js" defer></script>
+  </head>
+  <body>
+    <h1><img src="icon.png" alt="" /> Welcome to Switchboard</h1>
+    <p class="muted">Give every local app a trusted HTTPS name, like <b>https://myapp.test</b> for the app on port 3000.</p>
+
+    <section id="loading"><p class="muted">Reading what setup will change…</p></section>
+
+    <section id="plan" hidden>
+      <p>To do that, setup makes these changes once. macOS asks for your password.</p>
+      <ol id="changes"></ol>
+      <p class="muted" id="notes"></p>
+      <details>
+        <summary>The exact command, run as administrator</summary>
+        <pre id="command"></pre>
+      </details>
+      <p class="muted">You can undo all of it later with <code>sb uninstall</code>.</p>
+      <div class="actions">
+        <button id="later">Not Now</button>
+        <button id="run" class="primary">Set Up Switchboard</button>
+      </div>
+    </section>
+
+    <section id="running" hidden>
+      <p><b>Setting up…</b></p>
+      <p class="muted">Enter your password in the macOS dialog. This takes a few seconds.</p>
+    </section>
+
+    <section id="done" hidden>
+      <p class="ok"><b>Switchboard is ready.</b></p>
+      <p>Add a route from the menu bar (<b>Add Route…</b>), or in a terminal:</p>
+      <pre>sb add myapp 3000</pre>
+      <p class="muted">Then open https://myapp.test. Choose <b>Install Command-Line Tool…</b> in the menu to get the <code>sb</code> command.</p>
+      <div class="actions"><button id="close" class="primary">Done</button></div>
+    </section>
+
+    <section id="failed" hidden>
+      <p class="error"><b id="failed-title">Setup didn't finish.</b></p>
+      <pre id="output"></pre>
+      <div class="actions">
+        <button id="cancel">Close</button>
+        <button id="retry" class="primary">Try Again</button>
+      </div>
+    </section>
+  </body>
+</html>

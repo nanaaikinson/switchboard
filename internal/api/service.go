@@ -39,6 +39,8 @@ type Options struct {
 	// CA reports the local CA and whether the system trusts it; nil reports
 	// no CA.
 	CA func() CAInfo
+	// Pause turns every route off (true) or back on; nil can't pause.
+	Pause func(paused bool)
 }
 
 // Service owns the route table: it validates changes, persists them, pushes
@@ -55,6 +57,7 @@ type Service struct {
 	active       []DockerRoute  // the Docker routes served: those not clashing with routes
 	conflicts    []DockerSkip   // the others, and why
 	dockerStatus DockerStatus
+	paused       bool
 
 	lmu   sync.Mutex
 	dns   Listener
@@ -114,6 +117,7 @@ func (s *Service) Status() Status {
 	s.mu.Lock()
 	docker := s.dockerStatus
 	docker.Skipped = slices.Concat(docker.Skipped, s.conflicts)
+	paused := s.paused
 	s.mu.Unlock()
 	return Status{
 		Version:       s.opts.Version,
@@ -123,6 +127,7 @@ func (s *Service) Status() Status {
 		Proxy:         proxy,
 		HTTPS:         https,
 		Docker:        docker,
+		Paused:        paused,
 		Routes:        s.Routes(),
 	}
 }
@@ -286,4 +291,21 @@ func (s *Service) CA() CAInfo {
 		return CAInfo{}
 	}
 	return s.opts.CA()
+}
+
+// SetPaused turns every route off or back on, until the daemon restarts, and
+// publishes a paused.changed event.
+func (s *Service) SetPaused(paused bool) error {
+	if s.opts.Pause == nil {
+		return fmt.Errorf("%w: this daemon can't pause", ErrInvalid)
+	}
+	s.mu.Lock()
+	changed := s.paused != paused
+	s.paused = paused
+	s.opts.Pause(paused)
+	s.mu.Unlock()
+	if changed {
+		s.hub.publish(Event{Type: EventPausedChanged, Paused: &paused})
+	}
+	return nil
 }

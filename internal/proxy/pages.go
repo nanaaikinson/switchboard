@@ -90,3 +90,14 @@ func render(w http.ResponseWriter, status int, pg page) {
 		slog.Debug("proxy render page", "err", err)
 	}
 }
+
+// pausedPage answers every request while Switchboard is paused.
+func pausedPage(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Retry-After", "30")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.Write([]byte(`<!doctype html><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>Switchboard is paused</title>` +
+		`<body style="font:16px system-ui;max-width:32rem;margin:15vh auto;padding:0 1rem"><h1 style="font-size:1.25rem">Switchboard is paused</h1>` +
+		`<p>Every route is off for now. Resume from the tray menu, or run <code>sb resume</code>.</p></body>`))
+}

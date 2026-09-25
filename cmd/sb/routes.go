@@ -120,6 +120,9 @@ why. Warns when the DNS server, HTTP proxy or HTTPS proxy is not listening.`,
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s is not listening: %s\n", l.name, l.l.Error)
 				}
 			}
+			if st.Paused {
+				fmt.Fprintln(cmd.ErrOrStderr(), "warning: Switchboard is paused; every route answers 503. Resume with: sb resume")
+			}
 			if len(st.Routes) == 0 {
 				fmt.Fprintln(out, "No routes. Add one with: sb add myapp 3000")
 			} else {
@@ -219,4 +222,30 @@ func portSuffix(addrs []string, defaultPort string) string {
 		return ":" + port
 	}
 	return ""
+}
+
+func newPauseCmd(paused bool) *cobra.Command {
+	use, short, done := "pause", "Turn every route off until 'sb resume'", "Paused: every route answers 503 until 'sb resume'."
+	if !paused {
+		use, short, done = "resume", "Turn routes back on after 'sb pause'", "Resumed: routes are back on."
+	}
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		Long: `sb pause makes every route answer "Switchboard is paused" (503), without
+removing anything; sb resume turns them back on. The dashboard keeps working.
+A daemon restart resumes.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			c, err := newClient()
+			if err != nil {
+				return err
+			}
+			if err := c.SetPaused(cmd.Context(), paused); err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), done)
+			return nil
+		},
+	}
 }

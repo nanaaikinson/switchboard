@@ -1,0 +1,14 @@
+{
+  "name": "switchboard-tray",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "sidecar": "sh scripts/build-sidecar.sh",
+    "dev": "npm run sidecar && tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.5"
+  }
+}

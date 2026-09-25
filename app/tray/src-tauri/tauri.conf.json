@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Switchboard",
+  "version": "0.1.0",
+  "identifier": "dev.switchboard.tray",
+  "build": {
+    "frontendDist": "../ui",
+    "beforeBuildCommand": "sh scripts/build-sidecar.sh",
+    "beforeDevCommand": ""
+  },
+  "app": {
+    "windows": [],
+    "withGlobalTauri": true,
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src ipc: http://ipc.localhost",
+      "capabilities": ["local-windows"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [],
+    "category": "DeveloperTool",
+    "shortDescription": "Trusted HTTPS names for local apps",
+    "longDescription": "Switchboard maps local ports to trusted HTTPS names like https://myapp.test, with a menu-bar app, a dashboard and the sb command-line tool.",
+    "copyright": "Switchboard contributors",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "resources": [],
+    "externalBin": ["binaries/sb"],
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "hardenedRuntime": true,
+      "signingIdentity": null,
+      "dmg": { "appPosition": { "x": 180, "y": 170 }, "applicationFolderPosition": { "x": 480, "y": 170 } }
+    },
+    "windows": {
+      "digestAlgorithm": "sha256",
+      "signCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\sign-windows.ps1 \"%1\"",
+      "nsis": { "installMode": "currentUser", "displayLanguageSelector": false },
+      "wix": { "language": "en-US" }
+    }
+  }
+}

@@ -2,8 +2,10 @@ package dns
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -255,4 +257,54 @@ func TestListenSharesPortAndServeStops(t *testing.T) {
 	if _, err := net.DialTimeout("tcp", s.Addr(), time.Second); err == nil {
 		t.Error("TCP port still accepting after Serve returned")
 	}
+}
+
+// With port 0, the random UDP port's number can be taken for TCP. Listen must
+// then try another port instead of failing (this made daemon tests flaky).
+func TestListenRetriesWhenTCPPortIsTaken(t *testing.T) {
+	orig := listenTCP
+	t.Cleanup(func() { listenTCP = orig })
+	fails := 3
+	listenTCP = func(network, addr string) (net.Listener, error) {
+		if fails > 0 {
+			fails--
+			return nil, fmt.Errorf("listen %s %s: bind: address already in use", network, addr)
+		}
+		return orig(network, addr)
+	}
+	s, err := New("127.0.0.1:0", []string{"test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer s.pc.Close()
+	defer s.ln.Close()
+	if fails != 0 {
+		t.Errorf("%d TCP failures left, want every one retried", fails)
+	}
+	if s.pc.LocalAddr().(*net.UDPAddr).Port != s.ln.Addr().(*net.TCPAddr).Port {
+		t.Errorf("UDP %s and TCP %s ports differ", s.pc.LocalAddr(), s.ln.Addr())
+	}
+
+	// A fixed port is tried once, with a clear error.
+	fails = 1
+	fixed, err := New("127.0.0.1:"+strconv.Itoa(freeUDPPort(t)), []string{"test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixed.Listen(); err == nil || !strings.Contains(err.Error(), "listen tcp") {
+		t.Errorf("fixed port: %v, want the TCP error", err)
+	}
+}
+
+func freeUDPPort(t *testing.T) int {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	return pc.LocalAddr().(*net.UDPAddr).Port
 }

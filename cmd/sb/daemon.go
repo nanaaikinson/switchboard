@@ -115,6 +115,7 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 		Reserved: dashHosts,
 		Logs:     px.Logs,
 		CA:       func() api.CAInfo { return caInfo(ca, issuer, caErr, dashHosts[0]) },
+		Pause:    px.SetPaused,
 	})
 	if err != nil {
 		return err

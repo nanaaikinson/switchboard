@@ -81,6 +81,15 @@ func (c *Client) DashboardLogin(ctx context.Context) (string, error) {
 	return out.Token, err
 }
 
+// SetPaused turns every route off (true) or back on.
+func (c *Client) SetPaused(ctx context.Context, paused bool) error {
+	var out struct {
+		Paused bool `json:"paused"`
+	}
+	_, err := c.do(ctx, http.MethodPost, "/v1/pause", map[string]bool{"paused": paused}, &out)
+	return err
+}
+
 // Status returns daemon status.
 func (c *Client) Status(ctx context.Context) (api.Status, error) {
 	var out api.Status

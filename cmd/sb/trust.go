@@ -64,7 +64,7 @@ func untrustNSS(cmd *cobra.Command, p platform.Platform, certPath string) {
 }
 
 func newTrustCmd() *cobra.Command {
-	var yes bool
+	var f privFlags
 	cmd := &cobra.Command{
 		Use:   "trust",
 		Short: "Trust Switchboard's local CA for HTTPS (asks for your password once)",
@@ -92,24 +92,28 @@ sb trust again after 'sb untrust' or after installing a browser.`,
 				return fmt.Errorf("trusting the CA is not implemented on %s yet; add %s to your trust store by hand", runtime.GOOS, ca.CertPath())
 			}
 			argv := []string{opts.SbPath, "helper", "trust", "--ca-cert", ca.CertPath()}
-			ok, err := confirm(cmd, "sb trust will:", plan, argv, yes, caSummary(ca)+"\nUndo with 'sb untrust'.")
-			if err != nil || !ok {
-				return err
-			}
-			if err := runSudo(cmd.Context(), argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+			ran, err := runPrivileged(cmd, p, f, privPlan{
+				Title: "sb trust will:", Changes: plan, Command: argv,
+				Notes:  caSummary(ca) + "\nUndo with 'sb untrust'.",
+				Prompt: "Switchboard wants to trust its local certificate authority for HTTPS.",
+			})
+			if err != nil {
 				return fmt.Errorf("trust failed: %w; nothing else was changed, so it is safe to run 'sb trust' again", err)
+			}
+			if !ran {
+				return nil
 			}
 			trustNSS(cmd, p, ca.CertPath())
 			fmt.Fprintln(cmd.OutOrStdout(), "The Switchboard CA is trusted. Restart Firefox if it is open.")
 			return nil
 		},
 	}
-	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "do not ask for confirmation")
+	f.register(cmd)
 	return cmd
 }
 
 func newUntrustCmd() *cobra.Command {
-	var yes bool
+	var f privFlags
 	cmd := &cobra.Command{
 		Use:   "untrust",
 		Short: "Stop trusting Switchboard's local CA",
@@ -136,18 +140,22 @@ show certificate warnings until then.`,
 				return fmt.Errorf("untrusting the CA is not implemented on %s yet; remove %s from your trust store by hand", runtime.GOOS, path)
 			}
 			argv := []string{opts.SbPath, "helper", "untrust", "--ca-cert", path}
-			ok, err := confirm(cmd, "sb untrust will:", plan, argv, yes, "Trust it again later with 'sb trust'.")
-			if err != nil || !ok {
-				return err
-			}
-			if err := runSudo(cmd.Context(), argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+			ran, err := runPrivileged(cmd, p, f, privPlan{
+				Title: "sb untrust will:", Changes: plan, Command: argv,
+				Notes:  "Trust it again later with 'sb trust'.",
+				Prompt: "Switchboard wants to stop trusting its local certificate authority.",
+			})
+			if err != nil {
 				return fmt.Errorf("untrust failed: %w; it is safe to run 'sb untrust' again", err)
+			}
+			if !ran {
+				return nil
 			}
 			untrustNSS(cmd, p, path)
 			fmt.Fprintln(cmd.OutOrStdout(), "The Switchboard CA is no longer trusted.")
 			return nil
 		},
 	}
-	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "do not ask for confirmation")
+	f.register(cmd)
 	return cmd
 }

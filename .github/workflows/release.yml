@@ -72,3 +72,73 @@ jobs:
         if: ${{ !github.event.repository.private }}
         with:
           subject-path: "dist/*.tar.gz, dist/*.zip, dist/*.deb, dist/*.rpm"
+
+  # The tray app: a .dmg for macOS, and NSIS + MSI installers for Windows,
+  # attached to the release GoReleaser created. Signing reads only from
+  # repository secrets; without them the builds are unsigned.
+  tray:
+    needs: release
+    if: ${{ always() && needs.release.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: universal-apple-darwin
+            bundles: dmg
+            files: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis,msi
+            files: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write # upload release assets
+    defaults:
+      run:
+        shell: bash
+        working-directory: app/tray
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0 # the sidecar's version comes from git describe
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Build the tray app
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          # macOS signing and notarization (tauri reads these directly).
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Windows signing (src-tauri/scripts/sign-windows.ps1).
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          npm ci
+          version=${TAG#v}
+          # The app version is the release version (MSI needs a plain X.Y.Z).
+          npx tauri build --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}" \
+            --config "{\"version\": \"${version%%-*}\"}"
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: gh release upload "$TAG" ${{ matrix.files }} --clobber
+

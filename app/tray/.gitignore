@@ -1,0 +1,12 @@
+node_modules/
+
+# Rust / Tauri build output
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# The sb sidecar, built by scripts/build-sidecar.sh for each target
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
+
+.DS_Store
+*.log

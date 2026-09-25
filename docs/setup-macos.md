@@ -6,6 +6,14 @@ one `sudo` command: `sb helper install` or `sb helper uninstall`. `sb trust` and
 `sb untrust` do the CA steps (5 and 6 below) on their own, with `sb helper trust` and
 `sb helper untrust`. See [https.md](https.md) for the CA itself.
 
+All four take the same flags:
+
+| Flag | Does |
+| --- | --- |
+| `--yes`, `-y` | don't ask for confirmation |
+| `--print-plan` | print the changes and the exact command as JSON, and change nothing. The tray app's wizard shows this. |
+| `--admin-dialog` | ask for the password in the system's dialog instead of `sudo` in the terminal: `osascript … with administrator privileges` on macOS, `pkexec` on Linux. It's for apps with no terminal, such as the [tray app](tray.md). |
+
 ## What `sb setup` changes
 
 | # | Change | Owner and mode | Removed by `sb uninstall` |
