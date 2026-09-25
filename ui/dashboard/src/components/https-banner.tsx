@@ -18,7 +18,8 @@ export function HTTPSBanner({ state }: { state: HTTPSState }) {
         <AlertDescription>
           {status?.https.error && <p className="font-mono text-xs break-all">{status.https.error}</p>}
           <p>
-            Links below use plain HTTP until it's fixed. Run <code className="font-mono">sb doctor</code> to see why.
+            Links below use plain http:// until it's fixed. Run <code className="font-mono">sb doctor</code> in a terminal to
+            see why.
           </p>
         </AlertDescription>
       </Alert>
@@ -40,8 +41,8 @@ export function HTTPSBanner({ state }: { state: HTTPSState }) {
       <AlertTitle>Browsers don't trust Switchboard's certificates yet</AlertTitle>
       <AlertDescription>
         <p>
-          {ca?.present === false ? "There's no local CA yet. " : ""}HTTPS works, but every route will show a certificate
-          warning. Run <code className="font-mono">sb trust</code> in a terminal, then check again.
+          {ca?.present === false ? "There's no local CA yet. " : ""}HTTPS works, but browsers show a certificate warning for
+          every route. Run <code className="font-mono">sb trust</code> in a terminal, then check again.
         </p>
         <Button variant="outline" size="sm" className="mt-2" onClick={check} disabled={checking}>
           {checking ? "Checking…" : "Check again"}

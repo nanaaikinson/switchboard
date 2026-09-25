@@ -28,7 +28,8 @@ export function SettingsPage() {
             </span>
           </Row>
           <p className="text-muted-foreground">
-            Names without one of these get .{status?.tlds[0] ?? "test"}. Changing TLDs isn't supported from the dashboard yet.
+            Names that don't end in one of these get .{status?.tlds[0] ?? "test"} added. You can't change TLDs from the
+            dashboard yet.
           </p>
         </CardContent>
       </Card>
@@ -42,7 +43,7 @@ export function SettingsPage() {
             <p className="text-muted-foreground">Loading…</p>
           ) : !ca.present ? (
             <p>
-              No local CA yet. Run <code className="font-mono">sb trust</code>.
+              There's no local CA yet. Run <code className="font-mono">sb trust</code> in a terminal to create and trust one.
             </p>
           ) : (
             <>
@@ -55,13 +56,13 @@ export function SettingsPage() {
               </Row>
               {!ca.trusted && (
                 <p className="text-muted-foreground">
-                  Browsers will warn about Switchboard's certificates. Run <code className="font-mono">sb trust</code>
-                  {ca.error ? ` (${ca.error})` : ""}.
+                  Browsers show a warning for Switchboard's certificates. Run <code className="font-mono">sb trust</code> in
+                  a terminal to fix it{ca.error ? ` (${ca.error})` : ""}.
                 </p>
               )}
-              <Row label="Signs">{ca.tlds?.map((t) => "." + t).join(", ")} only</Row>
+              <Row label="Valid for">{ca.tlds?.map((t) => "." + t).join(", ")} names only</Row>
               <Row label="Expires">{ca.not_after && new Date(ca.not_after).toLocaleDateString()}</Row>
-              <Row label="SHA-256">
+              <Row label="Fingerprint">
                 <code className="break-all font-mono text-xs">{ca.fingerprint}</code>
               </Row>
             </>
@@ -75,7 +76,7 @@ export function SettingsPage() {
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           <Row label="Version">{status?.version}</Row>
-          <Row label="Up for">{status && formatUptime(status.uptime_seconds)}</Row>
+          <Row label="Uptime">{status && formatUptime(status.uptime_seconds)}</Row>
           <ListenerRow label="DNS" l={status?.dns} />
           <ListenerRow label="HTTP" l={status?.proxy} />
           <ListenerRow label="HTTPS" l={status?.https} />
@@ -88,13 +89,28 @@ export function SettingsPage() {
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
           {!status?.docker.enabled ? (
-            <p className="text-muted-foreground">Container discovery is off (sb daemon --docker=false).</p>
+            <p className="text-muted-foreground">
+              Container discovery is off, because the daemon runs with <code className="font-mono">--docker=false</code>.
+            </p>
           ) : status.docker.connected ? (
-            <Row label="Connected">
-              <code className="font-mono text-xs">{status.docker.endpoint}</code>
-            </Row>
+            <>
+              <Row label="Status">
+                <Badge className="bg-success text-white">Connected</Badge>
+              </Row>
+              <Row label="Endpoint">
+                <code className="font-mono text-xs">{status.docker.endpoint}</code>
+              </Row>
+            </>
           ) : (
-            <p className="text-muted-foreground">Not connected; retrying every 10 seconds. {status.docker.error}</p>
+            <>
+              <Row label="Status">
+                <Badge variant="secondary">Not connected</Badge>
+              </Row>
+              <p className="text-muted-foreground">
+                Can't reach Docker. Switchboard tries again every 10 seconds, so starting Docker is enough.
+              </p>
+              {status.docker.error && <p className="font-mono text-xs break-all text-muted-foreground">{status.docker.error}</p>}
+            </>
           )}
         </CardContent>
       </Card>
@@ -117,7 +133,7 @@ function ListenerRow({ label, l }: { label: string; l: Listener | undefined }) {
       {!l ? null : l.listening ? (
         <span className="font-mono text-xs">{l.addrs?.join(", ")}</span>
       ) : (
-        <span className="text-destructive">Not listening: {l.error}</span>
+        <span className="text-destructive">Not running: {l.error}</span>
       )}
     </Row>
   );

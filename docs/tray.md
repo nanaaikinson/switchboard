@@ -29,7 +29,7 @@ When the daemon isn't reachable, it retries every 3 seconds. The menu has:
 | --- | --- |
 | *N routes* | Header. Says *Paused* while paused, or *Switchboard isn't running* with **Set Up Switchboard…** |
 | 🟢 / 🔴 / ⚪ `name :port` | One per route (up / down / not checked yet), with where it comes from. Click to open `https://name` in the browser, or `http://` while HTTPS is down. Pure wildcards (`*.x.test`) aren't clickable. After 25 routes: *…and N more*, which opens the dashboard. |
-| **Add Route…** | A small window: name, port, Force HTTPS. It calls `POST /v1/routes`. |
+| **Add Route…** | A small window: name, port, HTTPS ("Serve this over TLS"). It calls `POST /v1/routes`. |
 | **Open Dashboard** | Gets a one-time sign-in token from the control socket and opens the dashboard in an app window. Disabled while HTTPS is down. |
 | **Pause All** | Check item. `POST /v1/pause`: every route answers 503 until unchecked (or `sb resume`, or a daemon restart). |
 | **Install Command-Line Tool…** | Links `/usr/local/bin/sb` to the app's bundled `sb` (admin dialog), so the command updates with the app. Asks before replacing an existing `sb`, e.g. one from Homebrew or `install.sh`. |

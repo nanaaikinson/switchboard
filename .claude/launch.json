@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard-fake",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["ui/dashboard/tests/fake-api.mjs"],
+      "port": 5199
+    }
+  ]
+}

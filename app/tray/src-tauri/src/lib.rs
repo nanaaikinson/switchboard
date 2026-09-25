@@ -282,7 +282,7 @@ fn open_wizard(app: &AppHandle) -> Result<(), String> {
 }
 
 fn open_add_route(app: &AppHandle) -> Result<(), String> {
-    show_window(app, "add-route", "Add Route", "add-route.html", (420.0, 330.0))
+    show_window(app, "add-route", "Add Route", "add-route.html", (420.0, 350.0))
 }
 
 // ---- setup ----

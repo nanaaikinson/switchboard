@@ -10,11 +10,13 @@
     <form id="form" novalidate>
       <label for="name">Name</label>
       <input id="name" type="text" placeholder="myapp" autocomplete="off" spellcheck="false" autofocus />
-      <div id="name-hint" class="hint muted">Names get .test unless they have it.</div>
+      <div id="name-hint" class="hint muted">.test is added if you leave it off.</div>
       <label for="port">Port</label>
       <input id="port" inputmode="numeric" placeholder="3000" autocomplete="off" />
       <div id="port-hint" class="hint error"></div>
-      <label class="inline"><input id="redirect" type="checkbox" checked /> Force HTTPS (redirect http:// to https://)</label>
+      <label class="inline option"><input id="redirect" type="checkbox" checked aria-describedby="redirect-hint" />
+        <span><span class="option-title">HTTPS</span><span id="redirect-hint" class="hint muted">Serve this over TLS</span></span>
+      </label>
       <p id="error" class="error" role="alert"></p>
       <div class="actions">
         <button type="button" id="cancel">Cancel</button>

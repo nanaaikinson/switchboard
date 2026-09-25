@@ -17,7 +17,7 @@ function check() {
 
 $("name").addEventListener("input", () => {
   const { name, nameOK } = check();
-  $("name-hint").textContent = !name ? "Names get .test unless they have it." : nameOK
+  $("name-hint").textContent = !name ? ".test is added if you leave it off." : nameOK
     ? `https://${name.endsWith(".test") ? name : name + ".test"}`
     : "Use letters, digits and hyphens, like myapp or api.myapp.";
   $("name-hint").className = `hint ${name && !nameOK ? "error" : "muted"}`;

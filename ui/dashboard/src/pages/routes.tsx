@@ -56,7 +56,8 @@ export function RoutesPage() {
       {!!status?.docker.skipped?.length && (
         <Card>
           <CardHeader>
-            <CardTitle>Docker containers without a route</CardTitle>
+            <CardTitle>Containers without a route</CardTitle>
+            <p className="text-sm text-muted-foreground">Docker containers Switchboard found but couldn't route, and why.</p>
           </CardHeader>
           <CardContent>
             <ul className="space-y-1 text-sm" data-testid="skipped">
@@ -83,7 +84,7 @@ function AddRouteForm({ tld, onAdded }: { tld: string; onAdded: () => Promise<vo
   const [serverError, setServerError] = useState<string | null>(null);
 
   const cleanName = name.trim().toLowerCase().replace(/\.$/, "");
-  const nameError = !validName(cleanName) ? "Use letters, digits and hyphens, like myapp or api.myapp; start with *. for a wildcard." : null;
+  const nameError = !validName(cleanName) ? "Use letters, digits and hyphens, like myapp or api.myapp. Start with *. to match every subdomain." : null;
   const portError = !validPort(port.trim()) ? "Enter a port from 1 to 65535." : null;
   const qualified = cleanName && !cleanName.endsWith("." + tld) ? `${cleanName}.${tld}` : cleanName;
 
@@ -128,7 +129,7 @@ function AddRouteForm({ tld, onAdded }: { tld: string; onAdded: () => Promise<vo
               aria-describedby="name-help"
             />
             <p id="name-help" className={touched && nameError ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
-              {touched && nameError ? nameError : qualified ? `https://${qualified}` : `Names get .${tld} unless they have it.`}
+              {touched && nameError ? nameError : qualified ? `https://${qualified}` : `.${tld} is added if you leave it off.`}
             </p>
           </div>
           <div className="grid gap-1.5">
@@ -151,14 +152,32 @@ function AddRouteForm({ tld, onAdded }: { tld: string; onAdded: () => Promise<vo
               {busy ? "Adding…" : "Add route"}
             </Button>
           </div>
-          <div className="flex flex-wrap gap-6 sm:col-span-3">
-            <label className="flex items-center gap-2 text-sm">
-              <Switch checked={redirect} onCheckedChange={setRedirect} aria-label="Force HTTPS" />
-              Force HTTPS <span className="text-muted-foreground">(redirect http:// to https://)</span>
+          <div className="flex flex-wrap gap-x-8 gap-y-4 sm:col-span-3">
+            <label className="flex items-start gap-3 text-sm">
+              <Switch checked={redirect} onCheckedChange={setRedirect} aria-label="HTTPS" aria-describedby="https-help" className="mt-0.5" />
+              <span className="grid gap-0.5">
+                <span className="font-medium">HTTPS</span>
+                <span id="https-help" className="text-xs text-muted-foreground">
+                  Serve this over TLS
+                </span>
+              </span>
             </label>
-            <label className="flex items-center gap-2 text-sm">
-              <Checkbox checked={wildcard} onCheckedChange={(v) => setWildcard(v === true)} aria-label="Also match subdomains" />
-              Also match every subdomain
+            <label className="flex items-start gap-3 text-sm">
+              <Checkbox
+                checked={wildcard}
+                onCheckedChange={(v) => setWildcard(v === true)}
+                aria-label="Subdomains"
+                aria-describedby="wildcard-help"
+                className="mt-0.5"
+              />
+              <span className="grid gap-0.5">
+                <span className="font-medium">Subdomains</span>
+                <span id="wildcard-help" className="text-xs text-muted-foreground">
+                  {qualified.startsWith("*.")
+                    ? "This name is already a wildcard"
+                    : `Also send *.${qualified || `myapp.${tld}`} to this port`}
+                </span>
+              </span>
             </label>
           </div>
           {serverError && (
@@ -202,15 +221,16 @@ function RoutesTable({ routes, https, onChange }: { routes: RouteStatus[]; https
             <TableHead>Name</TableHead>
             <TableHead className="w-20">Port</TableHead>
             <TableHead className="hidden md:table-cell">Source</TableHead>
-            <TableHead className="w-28">
+            <TableHead className="w-24">
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span className="inline-flex cursor-default items-center gap-1" tabIndex={0}>
-                    Force HTTPS <Info className="size-3.5 text-muted-foreground" />
+                    HTTPS <Info className="size-3.5 text-muted-foreground" />
                   </span>
                 </TooltipTrigger>
                 <TooltipContent className="max-w-64">
-                  Redirects http:// to https://. HTTPS always works; turn this off to also serve plain HTTP.
+                  Serve this over TLS. When on, http:// requests are redirected to https://. When off, plain http:// works
+                  too.
                 </TooltipContent>
               </Tooltip>
             </TableHead>
@@ -251,7 +271,7 @@ function RoutesTable({ routes, https, onChange }: { routes: RouteStatus[]; https
                     <Switch
                       checked={r.redirect_https}
                       disabled={!!readOnly}
-                      aria-label={`Force HTTPS for ${r.name}`}
+                      aria-label={`HTTPS for ${r.name}`}
                       onCheckedChange={(on) => run(() => api.put({ ...r, redirect_https: on }))}
                     />
                   </ReadOnlyTip>
@@ -304,7 +324,8 @@ function DeleteButton({ route, disabled, onConfirm }: { route: RouteStatus; disa
         <AlertDialogHeader>
           <AlertDialogTitle>Delete {route.name}?</AlertDialogTitle>
           <AlertDialogDescription>
-            https://{route.name} will stop working. The app on port {route.port} keeps running.
+            {route.name} will stop working. The app on port {route.port} keeps running, and you can add the route again
+            any time.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

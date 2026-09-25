@@ -13,14 +13,14 @@
     <section id="loading"><p class="muted">Reading what setup will change…</p></section>
 
     <section id="plan" hidden>
-      <p>To do that, setup makes these changes once. macOS asks for your password.</p>
+      <p>Setup makes these one-time changes. macOS will ask for your password.</p>
       <ol id="changes"></ol>
       <p class="muted" id="notes"></p>
       <details>
-        <summary>The exact command, run as administrator</summary>
+        <summary>Show the exact command (it runs as administrator)</summary>
         <pre id="command"></pre>
       </details>
-      <p class="muted">You can undo all of it later with <code>sb uninstall</code>.</p>
+      <p class="muted">You can undo all of it any time with <code>sb uninstall</code>.</p>
       <div class="actions">
         <button id="later">Not Now</button>
         <button id="run" class="primary">Set Up Switchboard</button>
@@ -29,14 +29,14 @@
 
     <section id="running" hidden>
       <p><b>Setting up…</b></p>
-      <p class="muted">Enter your password in the macOS dialog. This takes a few seconds.</p>
+      <p class="muted">Enter your password in the macOS dialog. This only takes a few seconds.</p>
     </section>
 
     <section id="done" hidden>
       <p class="ok"><b>Switchboard is ready.</b></p>
-      <p>Add a route from the menu bar (<b>Add Route…</b>), or in a terminal:</p>
+      <p>Choose <b>Add Route…</b> in the menu bar, or run this in a terminal:</p>
       <pre>sb add myapp 3000</pre>
-      <p class="muted">Then open https://myapp.test. Choose <b>Install Command-Line Tool…</b> in the menu to get the <code>sb</code> command.</p>
+      <p class="muted">Then open https://myapp.test. To get the <code>sb</code> command, choose <b>Install Command-Line Tool…</b> in the menu.</p>
       <div class="actions"><button id="close" class="primary">Done</button></div>
     </section>
 

@@ -47,7 +47,7 @@ test("shows the daemon's error when it rejects a route", async ({ page }) => {
 });
 
 test("toggles the HTTPS redirect", async ({ page, request }) => {
-  const toggle = page.getByRole("switch", { name: "Force HTTPS for myapp.test" });
+  const toggle = page.getByRole("switch", { name: "HTTPS for myapp.test" });
   await expect(toggle).toBeChecked();
   await toggle.click();
   await expect(toggle).not.toBeChecked();
@@ -157,18 +157,28 @@ test("HTTPS down: an error banner, open locks, and plain-HTTP links", async ({ p
   await expect(banner).toContainText("HTTPS isn't running");
   await expect(banner).toContainText("address already in use");
   await expect(banner).toContainText("sb doctor");
-  const lock = row(page, "myapp.test").getByRole("img", { name: "HTTPS unavailable" });
+  const lock = row(page, "myapp.test").getByRole("img", { name: "HTTPS not running" });
   await expect(lock).toBeVisible();
   await lock.hover();
-  await expect(page.getByRole("tooltip")).toContainText("only works over plain HTTP");
+  await expect(page.getByRole("tooltip")).toContainText("only works over plain http://");
   // The fake moves plain HTTP to :8080, so the port must be kept.
   await expect(row(page, "myapp.test").getByRole("link", { name: "myapp.test", exact: true })).toHaveAttribute("href", "http://myapp.test:8080/");
 });
 
-test("the Force HTTPS column explains what it does", async ({ page }) => {
-  await page.getByRole("columnheader", { name: /Force HTTPS/ }).locator("span").first().hover();
-  await expect(page.getByRole("tooltip")).toContainText("HTTPS always works; turn this off to also serve plain HTTP.");
-  await expect(page.getByRole("switch", { name: "Force HTTPS", exact: true })).toBeChecked(); // the add form's default
+test("the HTTPS column explains what it does", async ({ page }) => {
+  await page.getByRole("columnheader", { name: /HTTPS/ }).locator("span").first().hover();
+  await expect(page.getByRole("tooltip")).toContainText("Serve this over TLS. When on, http:// requests are redirected to https://.");
+  const https = page.getByRole("switch", { name: "HTTPS", exact: true });
+  await expect(https).toBeChecked(); // the add form's default
+  await expect(https).toHaveAccessibleDescription("Serve this over TLS");
+});
+
+test("the subdomain option names what it matches", async ({ page }) => {
+  await expect(page.getByText("Also send *.myapp.test to this port")).toBeVisible();
+  await page.getByLabel("Name").fill("blog");
+  await expect(page.getByText("Also send *.blog.test to this port")).toBeVisible();
+  await page.getByLabel("Name").fill("*.blog");
+  await expect(page.getByText("This name is already a wildcard")).toBeVisible();
 });
 
 test("follows the system color scheme", async ({ page }) => {
@@ -176,10 +186,39 @@ test("follows the system color scheme", async ({ page }) => {
   await page.emulateMedia({ colorScheme: "light" });
   const light = await bg();
   await page.emulateMedia({ colorScheme: "dark" });
+  await expect.poll(bg).not.toBe(light); // the change event is async
   const dark = await bg();
-  expect(light).not.toBe(dark);
   const lum = (c: string) => c.match(/[\d.]+/g)!.slice(0, 3).map(Number).reduce((a, b) => a + b, 0);
   expect(lum(dark)).toBeLessThan(lum(light));
+});
+
+test("the theme toggle overrides the system and is remembered", async ({ page }) => {
+  const isDark = () => page.evaluate(() => document.documentElement.classList.contains("dark"));
+  const theme = page.getByTestId("theme");
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(theme.getByRole("button", { name: "Match system theme" })).toHaveAttribute("aria-pressed", "true");
+  expect(await isDark()).toBe(false);
+
+  await theme.getByRole("button", { name: "Dark theme" }).click();
+  await expect(theme.getByRole("button", { name: "Dark theme" })).toHaveAttribute("aria-pressed", "true");
+  expect(await isDark()).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.style.colorScheme)).toBe("dark");
+
+  // public/theme.js applies it before the app loads, so there's no flash.
+  await page.reload();
+  expect(await isDark()).toBe(true);
+  await expect(theme.getByRole("button", { name: "Dark theme" })).toHaveAttribute("aria-pressed", "true");
+
+  await theme.getByRole("button", { name: "Light theme" }).click();
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.waitForTimeout(100); // give a (wrong) change handler time to run
+  expect(await isDark()).toBe(false); // a choice beats the system
+
+  await theme.getByRole("button", { name: "Match system theme" }).click();
+  await expect.poll(isDark).toBe(true);
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect.poll(isDark).toBe(false);
+  expect(await page.evaluate(() => localStorage.getItem("switchboard-theme"))).toBeNull();
 });
 
 test("unknown pages link back", async ({ page }) => {

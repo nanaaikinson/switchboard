@@ -43,6 +43,10 @@ button:disabled { opacity: 0.5; cursor: default; }
 .ok { color: var(--ok); }
 label { display: block; margin: 12px 0 4px; font-weight: 500; }
 label.inline { display: flex; align-items: center; gap: 8px; font-weight: 400; }
+label.option { align-items: flex-start; margin-top: 16px; }
+label.option input { margin-top: 3px; }
+label.option .option-title { display: block; font-weight: 500; }
+label.option .hint { display: block; margin-top: 0; }
 input[type="text"], input[inputmode] { width: 100%; font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
 input[aria-invalid="true"] { border-color: var(--bad); }
 .hint { font-size: 12px; margin-top: 4px; }

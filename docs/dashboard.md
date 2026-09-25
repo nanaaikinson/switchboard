@@ -20,9 +20,10 @@ reserved: `sb add`, `sb apply` and Docker can't take it. What it shows:
   - **open:** the HTTPS proxy isn't running. A banner shows the daemon's error and
     points to `sb doctor`, and links switch to `http://` so they still work.
 
-  **Force HTTPS** (per route, on by default) only decides whether `http://` requests
-  are redirected to `https://`. Turn it off to serve plain HTTP as well.
-- **Editing:** toggle Force HTTPS, delete routes, and add routes with validation.
+  **HTTPS** ("Serve this over TLS"; per route, on by default) decides whether
+  `http://` requests are redirected to `https://`. Turned off, the route answers plain
+  `http://` as well; `https://` keeps working either way.
+- **Editing:** toggle HTTPS, delete routes, and add routes with validation.
   Routes from project files and containers are read-only here, because the file or the
   container's labels own them. A tooltip says where to change them.
 - **Recent requests:** the last 100 requests to each route (time, method, path, status,
@@ -32,7 +33,10 @@ reserved: `sb add`, `sb apply` and Docker can't take it. What it shows:
   certificate against the system trust store, as a browser does), the listeners, and
   Docker discovery.
 
-Light and dark themes follow the OS (`prefers-color-scheme`).
+The theme follows the OS (`prefers-color-scheme`) until you pick **Light** or **Dark**
+with the toggle in the header; **Match system** goes back. The choice is stored in the
+browser (`localStorage`, key `switchboard-theme`), and `public/theme.js` applies it
+before the first paint, as a file because the CSP forbids inline scripts.
 
 ## Security
 

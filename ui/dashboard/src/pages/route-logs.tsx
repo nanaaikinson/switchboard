@@ -43,7 +43,7 @@ export function RouteLogsPage() {
   return (
     <div className="space-y-4">
       <Link to="/" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="size-4" /> Routes
+        <ArrowLeft className="size-4" /> All routes
       </Link>
       <Card>
         <CardHeader className="flex flex-row flex-wrap items-center gap-3">
@@ -73,7 +73,7 @@ export function RouteLogsPage() {
           ) : logs === null ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : logs.length === 0 ? (
-            <p className="py-6 text-center text-sm text-muted-foreground">No requests yet. Open the app and they'll show up here.</p>
+            <p className="py-6 text-center text-sm text-muted-foreground">No requests yet. Open the app, and they'll show up here.</p>
           ) : (
             <Table data-testid="logs">
               <TableHeader>
@@ -104,7 +104,7 @@ export function RouteLogsPage() {
             </Table>
           )}
           <p className="mt-3 text-xs text-muted-foreground">
-            The last 100 requests, kept in memory by the daemon. Query strings are never stored.
+            Shows the last 100 requests, newest first. They're kept in memory only, and query strings are never stored.
           </p>
         </CardContent>
       </Card>

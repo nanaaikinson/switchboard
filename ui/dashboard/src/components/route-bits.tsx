@@ -6,8 +6,8 @@ import { cn } from "@/lib/utils";
 
 const healthText: Record<Health, string> = {
   up: "Up: the app is accepting connections",
-  down: "Down: nothing is listening on the port",
-  unknown: "Not checked yet",
+  down: "Down: nothing is listening on this port. Is the app running?",
+  unknown: "Checking…",
 };
 
 export function StatusDot({ health }: { health: Health }) {
@@ -43,16 +43,25 @@ export function SourceBadge({ route }: { route: RouteStatus }) {
       </Tooltip>
     );
   }
-  return <Badge variant="outline">sb add</Badge>;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge variant="outline" className="cursor-default">
+          manual
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent>Added here or with sb add</TooltipContent>
+    </Tooltip>
+  );
 }
 
 /** Why a route can't be edited here, or null if it can. */
 export function readOnlyReason(r: RouteStatus): string | null {
   switch (r.source) {
     case "docker":
-      return `Comes from Docker container ${r.container}; change its labels instead.`;
+      return `Managed by the Docker container ${r.container}. To change it, edit the container's labels.`;
     case "file":
-      return `Comes from ${r.file}; edit that file and run sb apply.`;
+      return `Managed by ${r.file}. To change it, edit that file and run sb apply.`;
     default:
       return null;
   }
@@ -61,7 +70,7 @@ export function readOnlyReason(r: RouteStatus): string | null {
 const lockText: Record<Exclude<HTTPSState, "unknown">, string> = {
   ready: "HTTPS ready",
   untrusted: "HTTPS works, certificate not trusted",
-  down: "HTTPS unavailable",
+  down: "HTTPS not running",
 };
 
 /** A lock showing whether https:// works for the route, with its certificate in the tooltip. */
@@ -85,10 +94,10 @@ export function HTTPSLock({ route, state }: { route: Pick<RouteStatus, "name" | 
       </TooltipTrigger>
       <TooltipContent className="max-w-72">
         {state === "down" ? (
-          <>HTTPS isn't running, so this route only works over plain HTTP. Run sb doctor to see why.</>
+          <>HTTPS isn't running, so this route only works over plain http:// for now. Run sb doctor to see why.</>
         ) : (
           <>
-            {state === "ready" ? "HTTPS with a trusted certificate" : "HTTPS works, but browsers will warn until you run sb trust"}
+            {state === "ready" ? "HTTPS with a trusted certificate" : "HTTPS works, but browsers show a warning until you run sb trust"}
             <span className="mt-1 block font-mono text-[11px] opacity-80">
               Certificate: {names.join(", ")}
             </span>
