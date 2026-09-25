@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+
+	"github.com/nanaaikinson/switchboard/internal/mdns"
 )
 
 // Platform is the OS-specific functionality Switchboard needs.
@@ -70,6 +72,9 @@ type Platform interface {
 	// CheckLocalDNS reports whether the system resolver can send .local
 	// lookups to a unicast DNS server instead of keeping them on mDNS.
 	CheckLocalDNS(ctx context.Context) error
+	// MDNS returns the OS's own mDNS responder, for the experimental .local
+	// mode, or an error matching errors.ErrUnsupported if there is none.
+	MDNS() (mdns.Backend, error)
 	// LookupHost resolves host through the system resolver, as apps do.
 	LookupHost(ctx context.Context, host string) ([]string, error)
 	// PortOwner names the process listening on a TCP port, or "" if none is

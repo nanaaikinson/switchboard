@@ -398,7 +398,12 @@ func dockerStatus(st docker.State) (api.DockerStatus, []api.DockerRoute) {
 	return out, routes
 }
 
-// mdnsBackends are the ways this OS can announce .local names, best first.
+// mdnsBackends are the ways this OS can announce .local names, best first:
+// its own responder (mDNSResponder, Avahi), then the built-in one.
 func mdnsBackends() []mdns.Backend {
-	return []mdns.Backend{mdns.GoResponder()}
+	var out []mdns.Backend
+	if b, err := platform.Current().MDNS(); err == nil {
+		out = append(out, b)
+	}
+	return append(out, mdns.GoResponder())
 }

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nanaaikinson/switchboard/internal/mdns"
 	"github.com/nanaaikinson/switchboard/internal/pki"
 )
 
@@ -256,6 +257,12 @@ func (p *Platform) AdminCommand(argv []string, _ string) (*exec.Cmd, error) {
 // HelperRunning reports that no helper is needed.
 func (p *Platform) HelperRunning(context.Context) error {
 	return fmt.Errorf("Windows needs no helper: the daemon binds its ports itself (%w)", errors.ErrUnsupported) //nolint:staticcheck // ST1005: starts with a proper noun
+}
+
+// MDNS reports that Windows has no responder sb can use; the built-in one
+// is used instead.
+func (p *Platform) MDNS() (mdns.Backend, error) {
+	return mdns.Backend{}, fmt.Errorf("a native mDNS responder is %w on Windows", errors.ErrUnsupported)
 }
 
 // CheckLocalDNS is not implemented on Windows yet.
