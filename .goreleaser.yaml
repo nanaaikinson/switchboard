@@ -11,7 +11,11 @@ builds:
     binary: sb
     env: [CGO_ENABLED=0]
     flags: [-trimpath]
-    ldflags: ["-s -w -X main.version={{ .Tag }}"]
+    # SB_UPDATE_PUBLIC_KEY (a minisign "RW..." key) enables sb self-update;
+    # without it the build refuses to self-update. See docs/updates.md.
+    ldflags:
+      - -s -w -X main.version={{ .Tag }}
+      - -X github.com/nanaaikinson/switchboard/internal/update.ReleaseKey={{ index .Env "SB_UPDATE_PUBLIC_KEY" }}
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
 

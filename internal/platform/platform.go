@@ -57,6 +57,10 @@ type Platform interface {
 	// matching errors.ErrUnsupported where split DNS never needs it.
 	SyncHosts(ctx context.Context, names []string) error
 
+	// RestartDaemon restarts the daemon's per-user service, e.g. after sb
+	// self-update. It reports false if the daemon isn't installed as one.
+	RestartDaemon() (bool, error)
+
 	// Diagnostics for 'sb doctor', run as the user. Failures may implement
 	// interface{ Fix() string } with a one-line fix. Unsupported checks
 	// return an error matching errors.ErrUnsupported.

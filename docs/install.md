@@ -64,6 +64,13 @@ undo a per-user setup.
 Download the `.zip` for your CPU from the
 [releases page](https://github.com/nanaaikinson/switchboard/releases).
 
+## Updating
+
+`sb self-update` installs the latest release in place and keeps the previous one as
+`sb.old`; `sb rollback` goes back. See [updates.md](updates.md). Installs from a
+package manager update with that package manager instead (`brew upgrade`, `apt`,
+`dnf`), and `sb self-update` says so.
+
 ## Uninstalling
 
 Run `sb uninstall` to revert `sb setup`. Then delete the binary: `rm ~/.local/bin/sb`,

@@ -33,7 +33,7 @@ When the daemon isn't reachable, it retries every 3 seconds. The menu has:
 | **Open Dashboard** | Gets a one-time sign-in token from the control socket and opens the dashboard in an app window. Disabled while HTTPS is down. |
 | **Pause All** | Check item. `POST /v1/pause`: every route answers 503 until unchecked (or `sb resume`, or a daemon restart). |
 | **Install Command-Line Tool…** | Links `/usr/local/bin/sb` to the app's bundled `sb` (admin dialog), so the command updates with the app. Asks before replacing an existing `sb`, e.g. one from Homebrew or `install.sh`. |
-| **Check for Updates…** | Compares the app version with the latest GitHub release and offers to open its download page. |
+| **Check for Updates…** | Checks the signed Tauri updater manifest (`tray/stable.json` on the update host; see [updates.md](updates.md)). It applies the same staged rollout as `sb self-update`, then offers to install and restart. In builds without an updater key, it only compares with the latest GitHub release and opens its page. |
 | **Start at Login** | Check item. Adds or removes a LaunchAgent for the *app* (tauri-plugin-autostart). The daemon already starts at login on its own, via `sb setup`. |
 | **Quit Switchboard** | Quits the app. The daemon keeps running. |
 
@@ -139,7 +139,11 @@ this on your main machine: setup changes system files.
 14. **Start at Login**: checked → `~/Library/LaunchAgents/Switchboard.plist` exists.
     Log out and in: the app is in the menu bar. Uncheck it: the plist is gone.
 15. **Check for Updates…**: with no newer release, "You're up to date". Offline, or
-    while the repository is private, it shows a "Couldn't check" error, not a hang.
+    while the repository is private, it shows a "Couldn't check" error, not a hang. In
+    a build with the updater key, and a manifest with a newer version and
+    `rollout_percent` 100, it offers Install and Restart. After installing, the app
+    relaunches at the new version. With `rollout_percent` 0, it says the update isn't
+    offered to this Mac yet.
 16. Dark mode (System Settings → Appearance): the wizard and Add Route follow it, and
     the menu-bar icon stays legible.
 

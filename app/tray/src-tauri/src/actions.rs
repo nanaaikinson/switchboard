@@ -5,7 +5,7 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_opener::OpenerExt;
 
-use crate::{daemon, version};
+use crate::{daemon, rollout, version};
 
 const RELEASES_API: &str = "https://api.github.com/repos/nanaaikinson/switchboard/releases/latest";
 
@@ -158,9 +158,84 @@ pub fn applescript_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', r"\\").replace('"', "\\\""))
 }
 
+/// Checks for a newer version of the app. With an updater key configured, it
+/// uses the signed Tauri updater manifest on the update host and can install
+/// and restart; without one it can only point to the latest GitHub release.
+pub async fn check_for_updates(app: &AppHandle) {
+    if updater_pubkey(app).is_none() {
+        return check_github_release(app).await;
+    }
+    if let Err(e) = check_signed_update(app).await {
+        error_dialog(app, &format!("Couldn't check for updates: {e}"));
+    }
+}
+
+/// The updater plugin's public key, if this build has one.
+fn updater_pubkey(app: &AppHandle) -> Option<String> {
+    let cfg = app.config().plugins.0.get("updater")?;
+    cfg.get("pubkey")?.as_str().filter(|k| !k.is_empty()).map(str::to_owned)
+}
+
+async fn check_signed_update(app: &AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let current = app.package_info().version.to_string();
+    let update = app
+        .updater()
+        .map_err(|e| e.to_string())?
+        .check()
+        .await
+        .map_err(|e| e.to_string())?;
+    let Some(update) = update else {
+        info_dialog(app, &format!("You're up to date (v{current})."));
+        return Ok(());
+    };
+    // Staged rollout, decided exactly as sb self-update does.
+    let percent = update
+        .raw_json
+        .get("rollout_percent")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(100)
+        .min(100) as u32;
+    let id = rollout::install_id(&daemon::config_dir()).map_err(|e| format!("install ID: {e}"))?;
+    if !rollout::in_rollout(rollout::bucket(&id, &update.version), percent) {
+        info_dialog(
+            app,
+            &format!(
+                "Switchboard {} is rolling out gradually, and this Mac isn't included yet. Check again later.",
+                update.version
+            ),
+        );
+        return Ok(());
+    }
+    let app2 = app.clone();
+    app.dialog()
+        .message(format!(
+            "Switchboard {} is available. You have v{current}. Install it and restart the app?\n\n\
+             The update is signed, and checked before it's installed.",
+            update.version
+        ))
+        .title("Update Available")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Install and Restart".into(),
+            "Later".into(),
+        ))
+        .show(move |install| {
+            if !install {
+                return;
+            }
+            tauri::async_runtime::spawn(async move {
+                match update.download_and_install(|_, _| {}, || {}).await {
+                    Ok(()) => app2.restart(),
+                    Err(e) => error_dialog(&app2, &format!("The update didn't install: {e}")),
+                }
+            });
+        });
+    Ok(())
+}
+
 /// Compares the app's version with the latest GitHub release and offers to
 /// open its download page.
-pub async fn check_for_updates(app: &AppHandle) {
+async fn check_github_release(app: &AppHandle) {
     let current = app.package_info().version.to_string();
     let latest = async {
         let client = reqwest::Client::builder()

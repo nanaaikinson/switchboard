@@ -159,3 +159,13 @@ func (p *Platform) HelperListeners(ctx context.Context) ([]net.Listener, error) 
 func (p *Platform) SyncHosts(ctx context.Context, names []string) error {
 	return posix.SyncHosts(ctx, p.o.HelperSocket, names)
 }
+
+// RestartDaemon restarts the daemon's systemd user unit, so it runs the sb
+// binary now at its path. It reports false, and does nothing, if the daemon
+// isn't installed as a service. It runs as the user, in their own session.
+func (p *Platform) RestartDaemon() (bool, error) {
+	if _, err := os.Stat(p.fs(p.daemonUnit())); err != nil {
+		return false, nil
+	}
+	return true, p.run("restart the daemon", "systemctl", "--user", "restart", daemonUnitName)
+}

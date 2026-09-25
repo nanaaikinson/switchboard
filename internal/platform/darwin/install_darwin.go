@@ -260,3 +260,17 @@ func (p *Platform) unload(domain, label string) error {
 	}
 	return nil
 }
+
+// RestartDaemon restarts the daemon's LaunchAgent, so it runs the sb binary
+// now at its path. It reports false, and does nothing, if the daemon isn't
+// installed as a service.
+func (p *Platform) RestartDaemon() (bool, error) {
+	target := p.guiDomain() + "/" + DaemonLabel
+	if _, err := p.o.Run("launchctl", "print", target); err != nil {
+		return false, nil
+	}
+	if out, err := p.o.Run("launchctl", "kickstart", "-k", target); err != nil {
+		return true, fmt.Errorf("launchctl kickstart -k %s: %w: %s", target, err, strings.TrimSpace(string(out)))
+	}
+	return true, nil
+}

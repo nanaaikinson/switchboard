@@ -41,6 +41,9 @@ The release workflow:
 4. Then builds the [tray app](tray.md) on macOS (a universal `.dmg`) and Windows (NSIS
    `.exe` and `.msi`), and uploads them to the same release. They're signed when the
    signing secrets listed in tray.md are set, and unsigned otherwise.
+5. Signs the `sb` archives with the release key, and publishes the update manifests
+   that `sb self-update` and the tray app read (see [updates.md](updates.md)). This is
+   skipped until the key and deploy token are configured.
 
 ## Releasing by hand
 

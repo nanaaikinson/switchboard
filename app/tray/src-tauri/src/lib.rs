@@ -4,6 +4,7 @@
 
 mod actions;
 mod daemon;
+mod rollout;
 mod version;
 
 use std::sync::Mutex;
@@ -33,6 +34,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Shared::default())
         .invoke_handler(tauri::generate_handler![setup_plan, run_setup, add_route])
         .setup(|app| {

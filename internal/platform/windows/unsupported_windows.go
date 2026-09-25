@@ -78,3 +78,6 @@ func (Platform) SyncHosts(context.Context, []string) error { return ErrUnsupport
 
 // AdminCommand is unsupported.
 func (Platform) AdminCommand([]string, string) (*exec.Cmd, error) { return nil, ErrUnsupported }
+
+// RestartDaemon does nothing: there is no daemon service on Windows yet.
+func (Platform) RestartDaemon() (bool, error) { return false, nil }

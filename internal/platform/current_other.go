@@ -40,6 +40,7 @@ func (unsupported) TrustCA(string) error                      { return errUnsupp
 func (unsupported) UntrustCA(string) error                    { return errUnsupported }
 func (unsupported) TrustNSS(string) error                     { return errUnsupported }
 func (unsupported) UntrustNSS(string) error                   { return errUnsupported }
+func (unsupported) RestartDaemon() (bool, error)              { return false, nil }
 func (unsupported) HelperRunning(context.Context) error       { return errUnsupported }
 func (unsupported) SyncHosts(context.Context, []string) error { return errUnsupported }
 func (unsupported) CheckResolver(string, int) error           { return errUnsupported }

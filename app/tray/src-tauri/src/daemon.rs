@@ -49,11 +49,16 @@ pub struct NewRoute {
     pub redirect_https: bool,
 }
 
-/// The control socket: `$SWITCHBOARD_CONFIG_DIR`, else
-/// `$XDG_CONFIG_HOME/switchboard`, else `~/.config/switchboard`, then
-/// `sb.sock` (the same search as the sb binary).
+/// The control socket, `sb.sock` in the config dir.
 pub fn socket_path() -> PathBuf {
-    let dir = std::env::var_os("SWITCHBOARD_CONFIG_DIR")
+    config_dir().join("sb.sock")
+}
+
+/// Switchboard's config dir: `$SWITCHBOARD_CONFIG_DIR`, else
+/// `$XDG_CONFIG_HOME/switchboard`, else `~/.config/switchboard` (the same
+/// search as the sb binary).
+pub fn config_dir() -> PathBuf {
+    std::env::var_os("SWITCHBOARD_CONFIG_DIR")
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("XDG_CONFIG_HOME")
@@ -61,8 +66,7 @@ pub fn socket_path() -> PathBuf {
                 .filter(|p| p.is_absolute())
                 .map(|p| p.join("switchboard"))
         })
-        .unwrap_or_else(|| home().join(".config").join("switchboard"));
-    dir.join("sb.sock")
+        .unwrap_or_else(|| home().join(".config").join("switchboard"))
 }
 
 fn home() -> PathBuf {

@@ -66,6 +66,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GORELEASER_CURRENT_TAG: ${{ inputs.tag || github.ref_name }}
+          # Public, so a repository variable: enables sb self-update.
+          SB_UPDATE_PUBLIC_KEY: ${{ vars.SB_UPDATE_PUBLIC_KEY }}
 
       # Attestations are unavailable for user-owned private repositories.
       - uses: actions/attest-build-provenance@v4
@@ -85,12 +87,14 @@ jobs:
         include:
           - os: macos-latest
             target: universal-apple-darwin
-            bundles: dmg
-            files: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            bundles: app,dmg # the .app gives the updater's .app.tar.gz
+            dir: src-tauri/target/universal-apple-darwin/release/bundle
+            files: dmg/*.dmg macos/*.app.tar.gz macos/*.app.tar.gz.sig
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bundles: nsis,msi
-            files: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            dir: src-tauri/target/x86_64-pc-windows-msvc/release/bundle
+            files: nsis/*.exe nsis/*.exe.sig msi/*.msi
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write # upload release assets
@@ -129,16 +133,114 @@ jobs:
           # Windows signing (src-tauri/scripts/sign-windows.ps1).
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          # In-app updates: the release key (see docs/updates.md).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
         run: |
           npm ci
           version=${TAG#v}
           # The app version is the release version (MSI needs a plain X.Y.Z).
-          npx tauri build --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}" \
-            --config "{\"version\": \"${version%%-*}\"}"
+          config="{\"version\": \"${version%%-*}\"}"
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && [ -n "$UPDATER_PUBKEY" ]; then
+            config="{\"version\": \"${version%%-*}\", \"bundle\": {\"createUpdaterArtifacts\": true}, \"plugins\": {\"updater\": {\"pubkey\": \"$UPDATER_PUBKEY\"}}}"
+          fi
+          npx tauri build --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}" --config "$config"
 
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag || github.ref_name }}
-        run: gh release upload "$TAG" ${{ matrix.files }} --clobber
+        # Updater bundles and .sig files exist only when the signing key is set.
+        run: |
+          cd "${{ matrix.dir }}"
+          shopt -s nullglob
+          files=(${{ matrix.files }})
+          gh release upload "$TAG" "${files[@]}" --clobber
+
+  # Signs the sb archives, builds the update manifests (checking every
+  # signature), and publishes them to the switchboard-updates GitHub Pages
+  # repo, which sb self-update and the tray app read. Skipped until the
+  # release key and deploy token are configured; see docs/updates.md.
+  publish-updates:
+    needs: [release, tray]
+    if: ${{ always() && needs.release.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # upload the .minisig files
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+      UPDATES_DEPLOY_TOKEN: ${{ secrets.UPDATES_DEPLOY_TOKEN }}
+      SB_UPDATE_PUBLIC_KEY: ${{ vars.SB_UPDATE_PUBLIC_KEY }}
+      ROLLOUT: ${{ vars.UPDATE_ROLLOUT_PERCENT || '100' }}
+    steps:
+      - name: Check configuration
+        id: cfg
+        run: |
+          if [ -z "$MINISIGN_SECRET_KEY" ] || [ -z "$UPDATES_DEPLOY_TOKEN" ] || [ -z "$SB_UPDATE_PUBLIC_KEY" ]; then
+            echo "::notice::Update publishing is not configured (MINISIGN_SECRET_KEY, UPDATES_DEPLOY_TOKEN, SB_UPDATE_PUBLIC_KEY); skipping."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.cfg.outputs.enabled == 'true'
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-go@v7
+        if: steps.cfg.outputs.enabled == 'true'
+        with:
+          go-version-file: go.mod
+
+      - name: Sign the sb archives
+        if: steps.cfg.outputs.enabled == 'true'
+        run: |
+          sudo apt-get install -y -qq minisign
+          gh release download "$TAG" -p 'sb_*.tar.gz' -p 'sb_*.zip' -D dist
+          key=$(mktemp) && trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          for f in dist/sb_*; do
+            base=$(basename "$f")
+            platform=$(echo "$base" | sed -E 's/^sb_[^_]+_([a-z0-9]+)_([a-z0-9]+)\..*$/\1-\2/')
+            # The trusted comment binds the signature to this version and platform.
+            minisign -S -s "$key" -m "$f" -x "$f.minisig" -t "sb $TAG $platform" < /dev/null
+          done
+          gh release upload "$TAG" dist/*.minisig --clobber
+
+      - name: Build the manifests
+        if: steps.cfg.outputs.enabled == 'true'
+        run: |
+          base="https://github.com/${{ github.repository }}/releases/download/$TAG"
+          gh release view "$TAG" --json body -q .body > notes.md
+          go run ./cmd/sb-manifest -version "$TAG" -base-url "$base" -rollout "$ROLLOUT" -notes-file notes.md \
+            dist/sb_*.tar.gz dist/sb_*.zip > sb.json
+          mkdir -p tray
+          gh release download "$TAG" -D tray -p '*.app.tar.gz' -p '*.app.tar.gz.sig' -p '*-setup.exe' -p '*-setup.exe.sig' || true
+          if ls tray/*.sig > /dev/null 2>&1; then
+            go run ./cmd/sb-manifest -tray -version "$TAG" -base-url "$base" -rollout "$ROLLOUT" -notes-file notes.md \
+              tray/*.app.tar.gz tray/*-setup.exe > tray.json
+          fi
+
+      - name: Publish to switchboard-updates
+        if: steps.cfg.outputs.enabled == 'true'
+        run: |
+          git clone -q "https://x-access-token:${UPDATES_DEPLOY_TOKEN}@github.com/${{ github.repository_owner }}/switchboard-updates.git" updates
+          # Pre-releases go to beta; releases to stable, and to beta too, so
+          # beta users never lag behind stable.
+          case "$TAG" in *-*) channels="beta" ;; *) channels="stable beta" ;; esac
+          mkdir -p updates/tray
+          for c in $channels; do
+            cp sb.json "updates/$c.json"
+            if [ -f tray.json ]; then cp tray.json "updates/tray/$c.json"; fi
+          done
+          cd updates
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "$TAG: publish to $channels (rollout $ROLLOUT%)" || { echo "Nothing to publish."; exit 0; }
+          git push -q
 
