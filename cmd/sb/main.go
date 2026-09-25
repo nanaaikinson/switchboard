@@ -41,6 +41,8 @@ Run 'sb setup' once, then 'sb add <name> <port>' for each app.`,
 		newDoctorCmd(),
 		newSetupCmd(),
 		newUninstallCmd(),
+		newTrustCmd(),
+		newUntrustCmd(),
 	)
 	return root
 }

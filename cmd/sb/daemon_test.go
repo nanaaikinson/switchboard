@@ -39,6 +39,9 @@ func startDaemon(t *testing.T, opts daemonOptions) {
 	if len(opts.httpAddrs) == 0 {
 		opts.httpAddrs = []string{"127.0.0.1:0"}
 	}
+	if len(opts.httpsAddrs) == 0 {
+		opts.httpsAddrs = []string{"127.0.0.1:0"}
+	}
 	if opts.healthInterval == 0 {
 		opts.healthInterval = 20 * time.Millisecond
 	}

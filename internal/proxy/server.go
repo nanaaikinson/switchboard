@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,9 @@ import (
 
 // DefaultAddrs are the HTTP listen addresses: IPv4 and IPv6 loopback on port 80.
 func DefaultAddrs() []string { return []string{"127.0.0.1:80", "[::1]:80"} }
+
+// DefaultTLSAddrs are the HTTPS listen addresses: loopback on port 443.
+func DefaultTLSAddrs() []string { return []string{"127.0.0.1:443", "[::1]:443"} }
 
 // shutdownTimeout bounds how long Serve waits for in-flight requests.
 const shutdownTimeout = 5 * time.Second
@@ -42,11 +46,25 @@ func Listen(addrs []string) ([]net.Listener, error) {
 // Serve serves h on every listener until ctx is done or one fails, then shuts
 // down gracefully. Serve takes ownership of the listeners.
 func Serve(ctx context.Context, h http.Handler, lns []net.Listener) error {
+	return serve(ctx, h, lns, nil)
+}
+
+// ServeTLS is Serve over TLS with conf, which must provide certificates.
+// HTTP/2 is offered through ALPN alongside HTTP/1.1.
+func ServeTLS(ctx context.Context, h http.Handler, lns []net.Listener, conf *tls.Config) error {
+	if conf == nil {
+		return errors.New("proxy: ServeTLS needs a TLS config")
+	}
+	return serve(ctx, h, lns, conf.Clone())
+}
+
+func serve(ctx context.Context, h http.Handler, lns []net.Listener, conf *tls.Config) error {
 	if len(lns) == 0 {
 		return errors.New("proxy: Serve needs at least one listener")
 	}
 	srv := &http.Server{
 		Handler:           h,
+		TLSConfig:         conf,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		// No read/write timeouts: SSE and WebSockets are long-lived.
@@ -56,11 +74,15 @@ func Serve(ctx context.Context, h http.Handler, lns []net.Listener) error {
 	errc := make(chan error, len(lns))
 	var wg sync.WaitGroup
 	for _, ln := range lns {
-		slog.Info("proxy listening", "addr", ln.Addr().String())
+		slog.Info("proxy listening", "addr", ln.Addr().String(), "tls", conf != nil)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errc <- srv.Serve(ln)
+			if conf != nil {
+				errc <- srv.ServeTLS(ln, "", "") // certificates come from conf
+			} else {
+				errc <- srv.Serve(ln)
+			}
 		}()
 	}
 

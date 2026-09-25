@@ -2,7 +2,9 @@
 
 `sb setup` makes the one-time system changes that let `.test` names work. `sb uninstall`
 reverses them. Both print every change and ask for confirmation. Each then runs exactly
-one `sudo` command: `sb helper install` or `sb helper uninstall`.
+one `sudo` command: `sb helper install` or `sb helper uninstall`. `sb trust` and
+`sb untrust` do the CA steps (5 and 6 below) on their own, with `sb helper trust` and
+`sb helper untrust`. See [https.md](https.md) for the CA itself.
 
 ## What `sb setup` changes
 
@@ -12,6 +14,11 @@ one `sudo` command: `sb helper install` or `sb helper uninstall`.
 | 2 | `/Library/PrivilegedHelperTools/dev.switchboard.helper`: a copy of `sb` | root:wheel 0755 | Yes |
 | 3 | `/Library/LaunchDaemons/dev.switchboard.helper.plist`, loaded into the `system` domain | root:wheel 0644 | Yes, unloaded first |
 | 4 | `~/Library/LaunchAgents/dev.switchboard.daemon.plist`, which runs `sb daemon` at login, loaded into `gui/<uid>` | you, 0644 | Yes, unloaded first |
+| 5 | The local CA certificate is added to `/Library/Keychains/System.keychain` and trusted for TLS server certificates | System keychain | Yes: its trust setting is removed and it is deleted from the keychain |
+| 6 | As you, not root: the CA is added to Firefox's NSS databases, if Firefox and `certutil` are installed | your profile | Yes |
+
+Before step 1, `sb setup` creates the CA in `~/.config/switchboard/pki` if it doesn't
+exist yet. It runs as you, so the CA files are yours.
 
 At runtime the jobs also create files, which uninstall removes as well:
 - `/var/run/switchboard/helper.sock`: owned by you, mode 0600, in a root-owned directory.
@@ -19,7 +26,8 @@ At runtime the jobs also create files, which uninstall removes as well:
 - `~/Library/Logs/switchboard-daemon.log`.
 - `/etc/resolver` itself, if Switchboard created it and it's empty when you uninstall.
 
-Your routes in `~/.config/switchboard` are kept. Delete that folder to remove them too.
+Your routes and the CA files in `~/.config/switchboard` are kept, but the CA is no longer
+trusted. Delete that folder to remove them too.
 
 The resolver file:
 
@@ -35,10 +43,20 @@ tools also write `nameserver 127.0.0.1` files, and those are never removed. If
 
 ## Security design
 
-- **The helper does very little.** `sb helper serve` binds `127.0.0.1:80` and
-  `[::1]:80`, and hands the listening sockets to your daemon. It never accepts
-  connections itself. `sb helper install` and `sb helper uninstall` write and remove
-  only the files listed above.
+- **The helper does very little.** `sb helper serve` binds ports 80 and 443 on
+  `127.0.0.1` and `[::1]`, and hands the listening sockets to your daemon. It never
+  accepts connections itself. `sb helper install` and `sb helper uninstall` write and
+  remove only the files listed above. `sb helper trust` and `sb helper untrust` only
+  change the CA's entry in the System keychain.
+- **Root only trusts a constrained CA.** `sb helper trust` opens the certificate without
+  following symlinks and refuses anything that isn't a self-signed CA whose critical
+  name constraints allow only single-label TLDs and exclude every IP address. So even a
+  tampered file in your config dir can't make root trust a CA for real domains.
+- **Trust changes run in your Terminal, not in launchd.** macOS asks for approval before
+  changing admin trust settings, and refuses without a user session. That's why
+  trusting goes through `sudo sb helper trust`, like setup, and not through the helper's
+  socket. NSS databases are changed as you, so root never writes into your Firefox
+  profile.
 - **Only you can talk to the helper.** Its socket is created root-owned, then chowned
   to your uid with mode 0600, inside a root-owned 0755 directory. It accepts exactly
   one request, `{"version":1,"op":"listeners"}`. The socket descriptors are sent with
@@ -56,11 +74,14 @@ tools also write `nameserver 127.0.0.1` files, and those are never removed. If
 - **Protocol versions are checked.** If the helper and daemon disagree, the error says
   to re-run `sb setup`.
 
-## How the daemon gets port 80
+## How the daemon gets ports 80 and 443
 
-Unless `--http-addr` is given, `sb daemon` asks the helper for the listeners. If the
-helper isn't there, it binds `--http-addr` (default `127.0.0.1:80,[::1]:80`) itself,
-and reports any bind error in `sb ls`.
+Unless `--http-addr` or `--https-addr` is given, `sb daemon` asks the helper for the
+listeners, and uses the port 443 ones for HTTPS. It binds any set the helper didn't
+send itself: `--http-addr` (default `127.0.0.1:80,[::1]:80`) and `--https-addr`
+(default `127.0.0.1:443,[::1]:443`). Bind errors show up in `sb ls` and `sb doctor`. A
+helper installed by an older `sb` only sends port 80, so re-run `sb setup` after
+upgrading.
 
 ## Diagnosing problems: `sb doctor`
 
@@ -74,6 +95,8 @@ It exits with status 1 if any check fails.
 | `helper` | `/var/run/switchboard/helper.sock` accepts a connection (doctor connects and hangs up) | `sb setup` |
 | `resolver .<tld>` | `/etc/resolver/<tld>` is Switchboard's file and names the daemon's DNS port | `sb setup`; if another tool wrote it, remove that file or tool first |
 | `probe.<tld>` | `dscacheutil -q host -a name probe.<tld>` returns 127.0.0.1 | fix the checks above, or flush the DNS cache |
+| `local CA` | the CA in `~/.config/switchboard/pki` loads, can sign every TLD, and has more than 90 days left | `sb trust` if it's missing; otherwise make a new one (see [https.md](https.md)) |
+| `https probe.<tld>` | a TLS handshake with the HTTPS proxy for `probe.<tld>` verifies against the **system** trust store, as a browser would | `sb trust` |
 | `port 80`, `port 443` | the daemon's proxy serves the port, or the port is free and the proxy doesn't use it | stop the process named in the failure |
 | one line per route | the route's upstream `127.0.0.1:<port>` accepts a TCP connection | start the app, or `sb add <name> <port>` |
 
@@ -130,8 +153,8 @@ SSH, so that `gui/<uid>` exists.
     ```
     The socket should be `srw-------` and owned by you. Port 80 should be held by both
     `dev.switchboard.helper` (root) and `sb` (you).
-12. `sb ls` should print no warnings about DNS or the proxy, and `sb doctor` should end
-    with "All 7 checks passed." (port 443 passes as free until HTTPS lands).
+12. `sb ls` should print no warnings about DNS or either proxy, and `sb doctor` should
+    end with "All 9 checks passed."
 
 **Routing**
 13. Start an app with `python3 -m http.server 3000 &`, then `sb add myapp 3000`.
@@ -139,6 +162,24 @@ SSH, so that `gui/<uid>` exists.
     Safari.
 14. Stop the Python server. `curl http://myapp.test/` should return a 502 page that
     names port 3000.
+
+**HTTPS**
+14a. Keychain Access → System should list "Switchboard Local CA" as trusted ("This
+    certificate is marked as trusted for all users"). `curl -sI https://myapp.test/`
+    should return 200 with no `-k`, and `curl -sI http://myapp.test/` a 307 to
+    `https://myapp.test/`. Safari and Chrome should show a padlock with no warning.
+    `curl -sI --http2 https://myapp.test/` should report `HTTP/2`.
+14b. `sb add plain 3000 --no-redirect`: `curl -sI http://plain.test/` should return 200.
+14c. `sb add '*.tenants.myapp' 3000`: `openssl s_client -connect 127.0.0.1:443 -servername a.tenants.myapp.test </dev/null 2>/dev/null | openssl x509 -noout -ext subjectAltName`
+    should show `DNS:*.tenants.myapp.test`.
+14d. Name constraints: `openssl x509 -in ~/.config/switchboard/pki/ca/ca.pem -noout -ext nameConstraints`
+    should list `Permitted: DNS:test` and, under `Excluded`, `IP:0.0.0.0/0.0.0.0` and
+    `IP:0:0:0:0:0:0:0:0/0:0:0:0:0:0:0:0`.
+14e. With Firefox installed and `brew install nss`, `sb trust` should add the CA to
+    Firefox (Settings → Certificates → Authorities). Quit Firefox first.
+14f. `sb untrust`: one password prompt, and `curl https://myapp.test/` should now fail
+    with a certificate error. `sb doctor` should report `[FAIL] https probe.test:
+    certificate not trusted`. `sb trust` should bring it back.
 
 **Access control**
 15. Another user must not be able to reach the helper. Either of these should fail with

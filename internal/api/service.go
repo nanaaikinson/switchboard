@@ -47,6 +47,7 @@ type Service struct {
 	lmu   sync.Mutex
 	dns   Listener
 	proxy Listener
+	https Listener
 }
 
 // NewService serves opts.Config's routes through opts.Proxy.
@@ -72,8 +73,11 @@ func (s *Service) Run(ctx context.Context) { s.health.run(ctx) }
 // SetDNS records the DNS server's listening state for GET /status.
 func (s *Service) SetDNS(l Listener) { s.lmu.Lock(); s.dns = l; s.lmu.Unlock() }
 
-// SetProxy records the proxy's listening state for GET /status.
+// SetProxy records the HTTP proxy's listening state for GET /status.
 func (s *Service) SetProxy(l Listener) { s.lmu.Lock(); s.proxy = l; s.lmu.Unlock() }
+
+// SetHTTPS records the HTTPS proxy's listening state for GET /status.
+func (s *Service) SetHTTPS(l Listener) { s.lmu.Lock(); s.https = l; s.lmu.Unlock() }
 
 // Routes returns every route with its health.
 func (s *Service) Routes() []RouteStatus {
@@ -89,7 +93,7 @@ func (s *Service) Routes() []RouteStatus {
 // Status reports version, uptime, component state and routes.
 func (s *Service) Status() Status {
 	s.lmu.Lock()
-	dns, proxy := s.dns, s.proxy
+	dns, proxy, https := s.dns, s.proxy, s.https
 	s.lmu.Unlock()
 	return Status{
 		Version:       s.opts.Version,
@@ -97,6 +101,7 @@ func (s *Service) Status() Status {
 		TLDs:          slices.Clone(s.opts.TLDs),
 		DNS:           dns,
 		Proxy:         proxy,
+		HTTPS:         https,
 		Routes:        s.Routes(),
 	}
 }

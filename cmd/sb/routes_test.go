@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"net"
@@ -17,6 +19,7 @@ import (
 	"github.com/nanaaikinson/switchboard/internal/api"
 	"github.com/nanaaikinson/switchboard/internal/api/client"
 	"github.com/nanaaikinson/switchboard/internal/config"
+	"github.com/nanaaikinson/switchboard/internal/pki"
 )
 
 func run(t *testing.T, args ...string) (string, error) {
@@ -90,30 +93,41 @@ func TestCLIAgainstDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !st.DNS.Listening || !st.Proxy.Listening {
-		t.Fatalf("components not listening: dns %+v proxy %+v", st.DNS, st.Proxy)
+	if !st.DNS.Listening || !st.Proxy.Listening || !st.HTTPS.Listening {
+		t.Fatalf("components not listening: dns %+v proxy %+v https %+v", st.DNS, st.Proxy, st.HTTPS)
 	}
-	req, _ := http.NewRequest(http.MethodGet, "http://"+st.Proxy.Addrs[0]+"/", nil)
+	_, httpsPort, _ := net.SplitHostPort(st.HTTPS.Addrs[0])
+
+	// Plain HTTP redirects to HTTPS, which serves a certificate from the local CA.
+	req, _ := http.NewRequest(http.MethodGet, "http://"+st.Proxy.Addrs[0]+"/x?y=1", nil)
 	req.Host = "myapp.test"
-	resp, err := http.DefaultClient.Do(req)
+	noFollow := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := noFollow.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if want := "https://myapp.test:" + httpsPort + "/x?y=1"; resp.StatusCode != http.StatusTemporaryRedirect || resp.Header.Get("Location") != want {
+		t.Errorf("redirect = %d %q, want 307 %q", resp.StatusCode, resp.Header.Get("Location"), want)
+	}
+	resp, err = httpsClient(t, dir, st.HTTPS.Addrs[0]).Get("https://myapp.test/")
 	if err != nil {
 		t.Fatal(err)
 	}
 	body := new(bytes.Buffer)
 	_, _ = body.ReadFrom(resp.Body)
 	resp.Body.Close()
-	if body.String() != "hello from upstream" {
-		t.Errorf("proxied body = %q", body)
+	if body.String() != "hello from upstream" || resp.ProtoMajor != 2 {
+		t.Errorf("proxied body = %q over %s", body, resp.Proto)
 	}
 
 	var opened []string
 	realOpen := openURL
 	openURL = func(u string) error { opened = append(opened, u); return nil }
 	t.Cleanup(func() { openURL = realOpen })
-	_, proxyPort, _ := net.SplitHostPort(st.Proxy.Addrs[0])
 	mustRun(t, "open", "myapp")
 	mustRun(t, "open", "deep.api.myapp") // covered by the wildcard
-	want := []string{"http://myapp.test:" + proxyPort + "/", "http://deep.api.myapp.test:" + proxyPort + "/"}
+	want := []string{"https://myapp.test:" + httpsPort + "/", "https://deep.api.myapp.test:" + httpsPort + "/"}
 	if strings.Join(opened, " ") != strings.Join(want, " ") {
 		t.Errorf("opened %v, want %v", opened, want)
 	}
@@ -162,4 +176,22 @@ func TestCLIWithoutDaemon(t *testing.T) {
 			t.Errorf("sb %s: err = %v, want daemon-not-running hint", strings.Join(args, " "), err)
 		}
 	}
+}
+
+// httpsClient trusts the test config dir's CA and dials addr for every request.
+func httpsClient(t *testing.T, dir, addr string) *http.Client {
+	t.Helper()
+	ca, err := pki.Load(filepath.Join(dir, "pki"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(ca.Cert)
+	return &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{
+		TLSClientConfig:   &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
+		ForceAttemptHTTP2: true,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+		},
+	}}
 }

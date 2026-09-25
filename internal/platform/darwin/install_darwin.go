@@ -2,6 +2,7 @@ package darwin
 
 import (
 	"bytes"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/smallstep/truststore"
 )
 
 // ErrForeignFile means a file Switchboard would manage exists with content it
@@ -44,7 +47,9 @@ type Options struct {
 	Run          func(name string, args ...string) ([]byte, error) // nil runs the command
 	Chown        func(f *os.File, uid, gid int) error              // nil is (*os.File).Chown
 	HelperSocket string                                            // "" is DefaultHelperSocket
-	HelperAddrs  []string                                          // "" is 127.0.0.1:80 and [::1]:80
+	HelperAddrs  []string                                          // "" is ports 80 and 443 on 127.0.0.1 and [::1]
+	Trust        func(*x509.Certificate) error                     // nil is truststore.Install (System keychain)
+	NSS          func() (NSSStore, error)                          // nil is truststore.NewNSSTrust
 }
 
 // Platform implements platform.Platform for macOS.
@@ -57,7 +62,7 @@ func New(o Options) *Platform {
 	}
 	if o.Run == nil {
 		o.Run = func(name string, args ...string) ([]byte, error) {
-			return exec.Command(name, args...).CombinedOutput() //nolint:gosec // G204: only called with "launchctl" and fixed verbs
+			return exec.Command(name, args...).CombinedOutput() //nolint:gosec // G204: only called with fixed tools (launchctl, security, dscacheutil, lsof) and validated args
 		}
 	}
 	if o.Chown == nil {
@@ -67,7 +72,13 @@ func New(o Options) *Platform {
 		o.HelperSocket = DefaultHelperSocket
 	}
 	if len(o.HelperAddrs) == 0 {
-		o.HelperAddrs = []string{"127.0.0.1:80", "[::1]:80"}
+		o.HelperAddrs = []string{"127.0.0.1:80", "[::1]:80", "127.0.0.1:443", "[::1]:443"}
+	}
+	if o.Trust == nil {
+		o.Trust = func(c *x509.Certificate) error { return truststore.Install(c) }
+	}
+	if o.NSS == nil {
+		o.NSS = defaultNSS
 	}
 	return &Platform{o: o}
 }
@@ -101,7 +112,7 @@ func (p *Platform) InstallPlan(tld string, dnsPort int) []string {
 	return []string{
 		fmt.Sprintf("Write %s so .%s names resolve via 127.0.0.1 port %d", resolverPath(tld), tld, dnsPort),
 		fmt.Sprintf("Copy %s to %s (owned by root, mode 0755)", p.o.SbPath, helperBinPath),
-		fmt.Sprintf("Write %s and load it: runs the helper as root at boot; it only binds 127.0.0.1:80 and [::1]:80 and passes them to your daemon", helperPlistPath),
+		fmt.Sprintf("Write %s and load it: runs the helper as root at boot; it only binds ports 80 and 443 on 127.0.0.1 and [::1] and passes them to your daemon", helperPlistPath),
 		fmt.Sprintf("Write %s and load it: runs 'sb daemon' as you at login", p.agentPlist()),
 	}
 }

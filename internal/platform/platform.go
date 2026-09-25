@@ -23,11 +23,25 @@ type Platform interface {
 	InstallPlan(tld string, dnsPort int) []string
 	UninstallPlan(tld string) []string
 
+	// TrustPlan and UntrustPlan describe what trusting the CA changes.
+	TrustPlan(certPath string) []string
+	UntrustPlan(certPath string) []string
+
 	// Privileged; run by 'sb helper' as root.
 	InstallResolver(tld string, port int) error
 	RemoveResolver(tld string) error
 	InstallService() error
 	RemoveService() error
+	// TrustCA and UntrustCA add and remove the CA certificate at certPath in
+	// the system trust store. TrustCA refuses certificates that are not a
+	// name-constrained Switchboard CA.
+	TrustCA(certPath string) error
+	UntrustCA(certPath string) error
+
+	// TrustNSS and UntrustNSS do the same for the user's NSS (Firefox)
+	// stores. Run as the user, never as root.
+	TrustNSS(certPath string) error
+	UntrustNSS(certPath string) error
 
 	// ServeHelper is the root side of the helper protocol: it hands the HTTP
 	// listening sockets to the user's daemon. HelperListeners is the daemon side.

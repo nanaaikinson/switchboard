@@ -45,9 +45,13 @@ func newSetupCmd() *cobra.Command {
 asks for confirmation, then runs a single 'sudo sb helper install' that:
 
   - writes /etc/resolver/<tld> so the OS sends .<tld> lookups to Switchboard
-  - installs a root LaunchDaemon (the helper) that binds port 80 and hands
-    it to your daemon
+  - installs a root LaunchDaemon (the helper) that binds ports 80 and 443
+    and hands them to your daemon
   - installs a LaunchAgent that runs 'sb daemon' as you at login
+  - trusts Switchboard's local CA (created now if needed) in the System
+    keychain, so HTTPS names have no certificate warnings
+
+It then adds the CA to your Firefox stores as you, not root.
 
 Run it as your normal user, not with sudo. Undo everything with 'sb uninstall'.
 macOS only for now.`,
@@ -60,18 +64,24 @@ macOS only for now.`,
 			if err := p.Validate(); err != nil {
 				return fmt.Errorf("setup: %w", err)
 			}
+			ca, err := ensureCA()
+			if err != nil {
+				return fmt.Errorf("setup: %w", err)
+			}
 			tld, port := defaultTLD(), defaultDNSPort()
 			argv := []string{opts.SbPath, "helper", "install",
 				"--uid", strconv.Itoa(opts.UID), "--home", opts.Home, "--sb-path", opts.SbPath,
-				"--tld", tld, "--dns-port", strconv.Itoa(port)}
-			ok, err := confirm(cmd, "sb setup will make these system changes:", p.InstallPlan(tld, port), argv, yes,
-				"Undo everything later with 'sb uninstall'.")
+				"--tld", tld, "--dns-port", strconv.Itoa(port), "--ca-cert", ca.CertPath()}
+			plan := append(p.InstallPlan(tld, port), p.TrustPlan(ca.CertPath())...)
+			ok, err := confirm(cmd, "sb setup will make these system changes:", plan, argv, yes,
+				caSummary(ca)+"\nUndo everything later with 'sb uninstall'.")
 			if err != nil || !ok {
 				return err
 			}
 			if err := runSudo(cmd.Context(), argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
 				return fmt.Errorf("setup failed: %w; run 'sb uninstall' to remove anything that was installed", err)
 			}
+			trustNSS(cmd, p, ca.CertPath())
 			fmt.Fprintf(cmd.OutOrStdout(), "Setup complete. Try: sb add myapp 3000 && sb open myapp\n")
 			return nil
 		},
@@ -87,10 +97,12 @@ func newUninstallCmd() *cobra.Command {
 		Short: "Remove every system change made by 'sb setup'",
 		Long: `Reverse every step of 'sb setup' with a single 'sudo sb helper uninstall':
 unload and remove the LaunchAgent and helper LaunchDaemon, the helper binary,
-its logs and socket, and /etc/resolver/<tld> if Switchboard wrote it.
+its logs and socket, /etc/resolver/<tld> if Switchboard wrote it, and the
+local CA from the System keychain. Then remove the CA from your Firefox
+stores, as you.
 
-Safe to run more than once; anything already gone is skipped. Your routes in
-the config dir are kept; delete that folder to remove them too.`,
+Safe to run more than once; anything already gone is skipped. Your routes and
+the CA files in the config dir are kept; delete that folder to remove them too.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if os.Geteuid() == 0 {
@@ -104,13 +116,24 @@ the config dir are kept; delete that folder to remove them too.`,
 			}
 			argv := []string{opts.SbPath, "helper", "uninstall",
 				"--uid", strconv.Itoa(opts.UID), "--home", opts.Home, "--tld", tld}
+			caCert, err := existingCACert()
+			if err != nil {
+				return fmt.Errorf("uninstall: %w", err)
+			}
+			if caCert != "" {
+				plan = append(plan, p.UntrustPlan(caCert)...)
+				argv = append(argv, "--ca-cert", caCert)
+			}
 			ok, err := confirm(cmd, "sb uninstall will remove:", plan, argv, yes,
-				"Your routes in the config dir are kept.")
+				"Your routes and the CA files in the config dir are kept.")
 			if err != nil || !ok {
 				return err
 			}
 			if err := runSudo(cmd.Context(), argv, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
 				return fmt.Errorf("uninstall failed: %w; it is safe to run 'sb uninstall' again", err)
+			}
+			if caCert != "" {
+				untrustNSS(cmd, p, caCert)
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Switchboard system changes removed.")
 			return nil
@@ -171,13 +194,14 @@ func newHelperCmd() *cobra.Command {
 	helper := &cobra.Command{
 		Use:   "helper",
 		Short: "Privileged helper (internal; run by sb setup and launchd)",
-		Long: `The privileged helper. It only binds port 80 and passes it to your daemon,
-writes/removes split-DNS config, and installs/removes the launchd jobs.
-Run via 'sb setup' and 'sb uninstall', never by hand.`,
+		Long: `The privileged helper. It only binds ports 80 and 443 and passes them to
+your daemon, writes/removes split-DNS config, installs/removes the launchd
+jobs, and adds/removes the local CA in the system trust store.
+Run via 'sb setup', 'sb uninstall', 'sb trust' and 'sb untrust', never by hand.`,
 		Hidden: true,
 	}
 	var o platform.Options
-	var tld string
+	var tld, caCert string
 	var dnsPort int
 	requireRoot := func(*cobra.Command, []string) error {
 		if os.Geteuid() != 0 {
@@ -199,7 +223,12 @@ Run via 'sb setup' and 'sb uninstall', never by hand.`,
 			if err := p.InstallService(); err != nil {
 				return err
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "Installed resolver, helper and daemon.")
+			if caCert != "" {
+				if err := p.TrustCA(caCert); err != nil {
+					return fmt.Errorf("installed resolver, helper and daemon, but %w; run 'sb trust' to retry", err)
+				}
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "Installed resolver, helper and daemon, and trusted the CA.")
 			return nil
 		},
 	}
@@ -211,6 +240,9 @@ Run via 'sb setup' and 'sb uninstall', never by hand.`,
 			}
 			p := platform.New(o)
 			errs := []error{p.RemoveService(), p.RemoveResolver(tld)}
+			if caCert != "" {
+				errs = append(errs, p.UntrustCA(caCert))
+			}
 			for _, err := range errs {
 				if err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
@@ -230,6 +262,32 @@ Run via 'sb setup' and 'sb uninstall', never by hand.`,
 			return platform.New(o).ServeHelper(ctx)
 		},
 	}
+	trust := &cobra.Command{
+		Use: "trust", Short: "Trust the local CA in the system store (root)", Args: cobra.NoArgs, PreRunE: requireRoot,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := platform.New(o).TrustCA(caCert); err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "Trusted the CA in the system trust store.")
+			return nil
+		},
+	}
+	untrust := &cobra.Command{
+		Use: "untrust", Short: "Remove the local CA from the system store (root)", Args: cobra.NoArgs, PreRunE: requireRoot,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := platform.New(o).UntrustCA(caCert); err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "Removed the CA from the system trust store.")
+			return nil
+		},
+	}
+	for _, c := range []*cobra.Command{install, uninstall, trust, untrust} {
+		c.Flags().StringVar(&caCert, "ca-cert", "", "absolute path of the local CA certificate")
+	}
+	for _, c := range []*cobra.Command{trust, untrust} {
+		_ = c.MarkFlagRequired("ca-cert")
+	}
 	for _, c := range []*cobra.Command{install, uninstall, serve} {
 		c.Flags().IntVar(&o.UID, "uid", 0, "uid of the user Switchboard is installed for")
 		_ = c.MarkFlagRequired("uid")
@@ -242,6 +300,6 @@ Run via 'sb setup' and 'sb uninstall', never by hand.`,
 	install.Flags().StringVar(&o.SbPath, "sb-path", "", "absolute path of the sb binary")
 	install.Flags().IntVar(&dnsPort, "dns-port", defaultDNSPort(), "port of the daemon's DNS server")
 	_ = install.MarkFlagRequired("sb-path")
-	helper.AddCommand(install, uninstall, serve)
+	helper.AddCommand(install, uninstall, serve, trust, untrust)
 	return helper
 }

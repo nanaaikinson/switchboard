@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,12 +20,19 @@ import (
 	"github.com/nanaaikinson/switchboard/internal/api/client"
 	"github.com/nanaaikinson/switchboard/internal/config"
 	"github.com/nanaaikinson/switchboard/internal/dns"
+	"github.com/nanaaikinson/switchboard/internal/pki"
 	"github.com/nanaaikinson/switchboard/internal/platform"
 )
 
-// doctorPorts are the web ports Switchboard serves, or will serve once HTTPS
-// lands. Swapped in tests.
+// doctorPorts are the web ports Switchboard serves. Swapped in tests.
 var doctorPorts = []int{80, 443}
+
+// doctorRoots verifies the HTTPS probe; nil means the system trust store,
+// which is the point of the check. Swapped in tests.
+var doctorRoots *x509.CertPool
+
+// caMinLife is how long the CA must stay valid before doctor warns.
+const caMinLife = 90 * 24 * time.Hour
 
 const doctorDialTimeout = time.Second
 
@@ -51,6 +61,8 @@ with a one-line fix for each failure:
   - the privileged helper is running
   - the resolver file for each TLD exists and points at the daemon's DNS server
   - probe.<tld> resolves to 127.0.0.1 through the system resolver
+  - the local CA exists, covers every TLD and is not about to expire
+  - https://probe.<tld> presents a certificate the system trusts
   - ports 80 and 443 are served by Switchboard or free, else who holds them
   - each route's upstream port accepts connections
 
@@ -124,8 +136,13 @@ func runDoctor(ctx context.Context, p platform.Platform) []checkResult {
 		rs = append(rs, checkLookup(ctx, p, "probe."+tld, fix))
 	}
 
+	rs = append(rs, checkCA(tlds))
+	for _, tld := range tlds {
+		rs = append(rs, checkHTTPS(ctx, st, up, "probe."+tld))
+	}
+
 	for _, port := range doctorPorts {
-		rs = append(rs, checkPort(ctx, p, port, st.Proxy, up))
+		rs = append(rs, checkPort(ctx, p, port, st, up))
 	}
 
 	return append(rs, checkRoutes(ctx, st, up)...)
@@ -173,16 +190,77 @@ func checkLookup(ctx context.Context, p platform.Platform, host, fix string) che
 	return fromErr(host, "resolves to 127.0.0.1", err, fix)
 }
 
-// checkPort passes if the proxy serves port, or if port is free and the proxy
-// does not use it. Otherwise it names the process holding the port. With the
-// daemon down only a named holder fails, since the root helper may still hold
-// port 80 and is not visible without sudo.
-func checkPort(ctx context.Context, p platform.Platform, port int, proxy api.Listener, up bool) checkResult {
+// checkCA checks the local CA's files, name constraints and expiry.
+func checkCA(tlds []string) checkResult {
+	const name = "local CA"
+	dir, err := pki.DefaultDir()
+	var ca *pki.CA
+	if err == nil {
+		ca, err = pki.Load(dir)
+	}
+	rotate := "Run 'sb untrust', move " + filepath.Join(dir, "ca") + " aside, then run 'sb trust' to make a new CA."
+	switch {
+	case errors.Is(err, pki.ErrNoCA):
+		return checkResult{checkFail, name, "not created yet", "Run 'sb trust' (or 'sb setup')."}
+	case err != nil:
+		return checkResult{checkFail, name, err.Error(), rotate}
+	}
+	for _, tld := range tlds {
+		if !ca.Permits("x." + tld) {
+			return checkResult{checkFail, name, fmt.Sprintf("cannot sign .%s names (limited to %s)", tld, strings.Join(ca.Cert.PermittedDNSDomains, ", ")), rotate}
+		}
+	}
+	expires := ca.Cert.NotAfter.Format(time.DateOnly)
+	if time.Until(ca.Cert.NotAfter) < caMinLife {
+		return checkResult{checkFail, name, "expires on " + expires, rotate}
+	}
+	return pass(name, "valid until "+expires+", limited to ."+strings.Join(ca.Cert.PermittedDNSDomains, ", ."))
+}
+
+// checkHTTPS does a TLS handshake with the HTTPS proxy for host, verified
+// against the system trust store, as a browser would.
+func checkHTTPS(ctx context.Context, st api.Status, up bool, host string) checkResult {
+	name := "https " + host
+	switch {
+	case !up:
+		return checkResult{status: checkSkip, name: name, detail: "daemon not running"}
+	case !st.HTTPS.Listening || len(st.HTTPS.Addrs) == 0:
+		return checkResult{checkFail, name, "HTTPS proxy not listening: " + st.HTTPS.Error,
+			"Re-run 'sb setup' so the helper binds port 443 and the daemon restarts."}
+	}
+	d := tls.Dialer{
+		NetDialer: &net.Dialer{Timeout: doctorDialTimeout},
+		Config:    &tls.Config{ServerName: host, RootCAs: doctorRoots, MinVersion: tls.VersionTLS12},
+	}
+	conn, err := d.DialContext(ctx, "tcp", st.HTTPS.Addrs[0])
+	var verr *tls.CertificateVerificationError
+	switch {
+	case errors.As(err, &verr):
+		return checkResult{checkFail, name, "certificate not trusted: " + verr.Err.Error(),
+			"Run 'sb trust'. If it is already trusted, run 'sb untrust', then 'sb trust'."}
+	case err != nil:
+		return checkResult{checkFail, name, "TLS handshake failed: " + err.Error(),
+			"Re-run 'sb setup' to restart the daemon, then run 'sb doctor' again."}
+	}
+	leaf := conn.(*tls.Conn).ConnectionState().PeerCertificates[0]
+	_ = conn.Close()
+	return pass(name, "trusted certificate, expires "+leaf.NotAfter.Format(time.DateOnly))
+}
+
+// checkPort passes if the HTTP or HTTPS proxy serves port, or if port is free
+// and neither uses it. Otherwise it names the process holding the port. With
+// the daemon down only a named holder fails, since the root helper may still
+// hold the ports and is not visible without sudo.
+func checkPort(ctx context.Context, p platform.Platform, port int, st api.Status, up bool) checkResult {
 	name := "port " + strconv.Itoa(port)
 	var ours []string
-	for _, a := range proxy.Addrs {
-		if n, ok := portOf(a); ok && n == port {
-			ours = append(ours, a)
+	proxy := st.Proxy
+	for _, l := range []api.Listener{st.Proxy, st.HTTPS} {
+		for _, a := range l.Addrs {
+			if n, ok := portOf(a); ok && n == port {
+				ours = append(ours, a)
+				proxy = l
+			}
 		}
 	}
 	if proxy.Listening && len(ours) > 0 {
@@ -202,7 +280,7 @@ func checkPort(ctx context.Context, p platform.Platform, port int, proxy api.Lis
 		return checkResult{checkFail, name, "not served: " + proxy.Error,
 			"Re-run 'sb setup' so the helper can bind it for the daemon."}
 	default:
-		return pass(name, "free (not used by Switchboard yet)")
+		return pass(name, "free (not used by Switchboard)")
 	}
 }
 

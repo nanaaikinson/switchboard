@@ -2,6 +2,7 @@ package darwin
 
 import (
 	"bytes"
+	"crypto/x509"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -75,6 +76,15 @@ func newEnv(t *testing.T) *env {
 	e.p = New(Options{
 		UID: os.Getuid(), Home: "/Users/me", SbPath: "/opt/bin/sb", Root: e.root,
 		Run: e.lc.run,
+		// Tests must never touch the real trust stores.
+		Trust: func(*x509.Certificate) error {
+			t.Error("unexpected system trust change")
+			return errors.New("trust disabled in tests")
+		},
+		NSS: func() (NSSStore, error) {
+			t.Error("unexpected NSS access")
+			return nil, errors.New("NSS disabled in tests")
+		},
 		Chown: func(f *os.File, uid, gid int) error {
 			rel, _ := filepath.Rel(e.root, f.Name())
 			e.own = append(e.own, chownCall{"/" + rel, uid, gid})
@@ -473,7 +483,7 @@ func TestValidate(t *testing.T) {
 func TestPlans(t *testing.T) {
 	e := newEnv(t)
 	install := strings.Join(e.p.InstallPlan("test", 15353), "\n")
-	for _, want := range []string{"/etc/resolver/test", "port 15353", "/opt/bin/sb", helperBinPath, helperPlistPath, "127.0.0.1:80",
+	for _, want := range []string{"/etc/resolver/test", "port 15353", "/opt/bin/sb", helperBinPath, helperPlistPath, "ports 80 and 443",
 		"/Users/me/Library/LaunchAgents/dev.switchboard.daemon.plist"} {
 		if !strings.Contains(install, want) {
 			t.Errorf("install plan missing %q:\n%s", want, install)

@@ -93,7 +93,8 @@ func newLsCmd() *cobra.Command {
 		Use:   "ls",
 		Short: "List routes and their status",
 		Long: `List routes with the health of their upstream port: up, down, or unknown
-before the first check. Warns when the DNS server or proxy is not listening.`,
+before the first check. Warns when the DNS server, HTTP proxy or HTTPS proxy
+is not listening.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, err := newClient()
@@ -113,7 +114,7 @@ before the first check. Warns when the DNS server or proxy is not listening.`,
 			for _, l := range []struct {
 				name string
 				l    api.Listener
-			}{{"DNS server", st.DNS}, {"Proxy", st.Proxy}} {
+			}{{"DNS server", st.DNS}, {"Proxy", st.Proxy}, {"HTTPS proxy", st.HTTPS}} {
 				if !l.l.Listening {
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s is not listening: %s\n", l.name, l.l.Error)
 				}
@@ -137,7 +138,7 @@ before the first check. Warns when the DNS server or proxy is not listening.`,
 func newOpenCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "open <name>",
-		Short:   "Open a route in the default browser",
+		Short:   "Open a route in the default browser (HTTPS when available)",
 		Example: "  sb open myapp\n  sb open acme.tenants.myapp",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -156,7 +157,10 @@ func newOpenCmd() *cobra.Command {
 			if !routed(host, st.Routes) {
 				return fmt.Errorf("no route for %s; add one with: sb add %s <port>", host, args[0])
 			}
-			u := "http://" + host + proxyPortSuffix(st.Proxy.Addrs) + "/"
+			u := "http://" + host + portSuffix(st.Proxy.Addrs, "80") + "/"
+			if st.HTTPS.Listening {
+				u = "https://" + host + portSuffix(st.HTTPS.Addrs, "443") + "/"
+			}
 			if err := openURL(u); err != nil {
 				return err
 			}
@@ -185,12 +189,12 @@ func routed(host string, routes []api.RouteStatus) bool {
 	return false
 }
 
-// proxyPortSuffix returns ":<port>" when the proxy is not on port 80.
-func proxyPortSuffix(addrs []string) string {
+// portSuffix returns ":<port>" when the first address is not on defaultPort.
+func portSuffix(addrs []string, defaultPort string) string {
 	if len(addrs) == 0 {
 		return ""
 	}
-	if _, port, err := net.SplitHostPort(addrs[0]); err == nil && port != "80" {
+	if _, port, err := net.SplitHostPort(addrs[0]); err == nil && port != defaultPort {
 		return ":" + port
 	}
 	return ""

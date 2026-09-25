@@ -31,7 +31,8 @@ type Status struct {
 	UptimeSeconds int64         `json:"uptime_seconds"`
 	TLDs          []string      `json:"tlds"`
 	DNS           Listener      `json:"dns"`
-	Proxy         Listener      `json:"proxy"`
+	Proxy         Listener      `json:"proxy"` // plain HTTP
+	HTTPS         Listener      `json:"https"`
 	Routes        []RouteStatus `json:"routes"`
 }
 

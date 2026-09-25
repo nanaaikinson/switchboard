@@ -43,11 +43,24 @@ wildcard are rejected.
 | Route found but nothing listening on the port | 502 | "Nothing is listening on port N", with next steps |
 | Upstream closed the connection or sent an invalid response | 502 | Names the port and suggests checking the app's logs |
 
+## HTTPS
+
+- **Serving:** `ServeTLS` serves the same handler over TLS 1.2+, with certificates from
+  `pki.Issuer` (see [https.md](https.md)). It offers HTTP/2 and HTTP/1.1 through ALPN.
+  WebSockets use HTTP/1.1.
+- **Redirects:** on the plain-HTTP listeners, the daemon wraps the proxy in
+  `RedirectHTTPS`. A request for a route with `redirect_https = true` gets a
+  `307 Temporary Redirect` to the same path and query over HTTPS. 307 keeps the method
+  and body, and browsers don't cache it, so `--no-redirect` takes effect immediately.
+  Only hosts that are valid hostnames are redirected. Other requests, and every request
+  while HTTPS isn't listening, are proxied over plain HTTP as before.
+
 ## Listening
 
-- **Default addresses:** `127.0.0.1:80` and `[::1]:80`. Only loopback IPs are accepted.
-- **Port 80:** it is privileged. In production the helper binds it and passes the
-  listeners to `Serve`.
+- **Default addresses:** `127.0.0.1:80` and `[::1]:80` for HTTP, and `127.0.0.1:443` and
+  `[::1]:443` for HTTPS. Only loopback IPs are accepted.
+- **Ports 80 and 443:** they are privileged. In production the helper binds them and
+  passes the listeners to `Serve` and `ServeTLS`.
 - **Route changes:** `SetRoutes` swaps the whole table atomically. In-flight requests
   finish on the table they started with. An invalid table is rejected and the old one
   stays in place.

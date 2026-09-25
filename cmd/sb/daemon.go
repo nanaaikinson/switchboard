@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/nanaaikinson/switchboard/internal/api"
 	"github.com/nanaaikinson/switchboard/internal/config"
 	"github.com/nanaaikinson/switchboard/internal/dns"
+	"github.com/nanaaikinson/switchboard/internal/pki"
 	"github.com/nanaaikinson/switchboard/internal/platform"
 	"github.com/nanaaikinson/switchboard/internal/proxy"
 )
@@ -23,6 +26,7 @@ import (
 type daemonOptions struct {
 	dnsAddr        string
 	httpAddrs      []string
+	httpsAddrs     []string
 	healthInterval time.Duration
 	useHelper      bool   // ask the privileged helper for the HTTP listeners first
 	ready          func() // called once the control socket is accepting; for tests
@@ -41,12 +45,16 @@ Normally started by the OS service manager, not by hand. If the DNS server or
 proxy cannot bind (for example, port 80 without the helper), the daemon keeps
 running and reports the error in 'sb ls' and GET /v1/status.
 
-Unless --http-addr is given, the daemon first asks the privileged helper
-installed by 'sb setup' for the port 80 listeners, and binds them itself only
-if the helper is not available.`,
+HTTPS is served with certificates issued on demand by the local CA in
+<config dir>/pki, which is created on first run. Plain HTTP requests for routes
+with redirect_https are redirected to HTTPS while HTTPS is up.
+
+Unless --http-addr or --https-addr is given, the daemon first asks the
+privileged helper installed by 'sb setup' for the port 80 and 443 listeners,
+and binds any it did not get itself.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			opts.useHelper = !cmd.Flags().Changed("http-addr")
+			opts.useHelper = !cmd.Flags().Changed("http-addr") && !cmd.Flags().Changed("https-addr")
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			return runDaemon(ctx, opts)
@@ -55,6 +63,7 @@ if the helper is not available.`,
 	f := cmd.Flags()
 	f.StringVar(&opts.dnsAddr, "dns-addr", dns.DefaultAddr, "DNS listen address (loopback only)")
 	f.StringSliceVar(&opts.httpAddrs, "http-addr", proxy.DefaultAddrs(), "HTTP proxy listen addresses (loopback only)")
+	f.StringSliceVar(&opts.httpsAddrs, "https-addr", proxy.DefaultTLSAddrs(), "HTTPS proxy listen addresses (loopback only)")
 	f.DurationVar(&opts.healthInterval, "health-interval", api.DefaultHealthInterval, "how often to check upstream ports")
 	return cmd
 }
@@ -115,14 +124,43 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 		})
 	}
 
-	if lns, err := proxyListeners(ctx, opts); err != nil {
-		slog.Warn("proxy not listening", "err", err)
-		svc.SetProxy(api.Listener{Addrs: opts.httpAddrs, Error: err.Error()})
+	plain, secure := proxyListeners(ctx, opts)
+	// HTTPS first, so plain HTTP knows whether and where to redirect.
+	httpsPort := 0
+	if secure.err == nil {
+		issuer, err := newIssuer(tlds, px)
+		if err != nil {
+			closeListeners(secure.lns)
+			secure.err = err
+		} else {
+			addrs := listenerAddrs(secure.lns)
+			httpsPort = secure.lns[0].Addr().(*net.TCPAddr).Port
+			svc.SetHTTPS(api.Listener{Addrs: addrs, Listening: true})
+			wg.Go(func() {
+				if err := proxy.ServeTLS(ctx, px, secure.lns, issuer.TLSConfig()); err != nil {
+					slog.Error("https proxy stopped", "err", err)
+					svc.SetHTTPS(api.Listener{Addrs: addrs, Error: err.Error()})
+				}
+			})
+		}
+	}
+	if secure.err != nil {
+		slog.Warn("https proxy not listening", "err", secure.err)
+		svc.SetHTTPS(api.Listener{Addrs: opts.httpsAddrs, Error: secure.err.Error()})
+	}
+
+	if plain.err != nil {
+		slog.Warn("proxy not listening", "err", plain.err)
+		svc.SetProxy(api.Listener{Addrs: opts.httpAddrs, Error: plain.err.Error()})
 	} else {
-		addrs := listenerAddrs(lns)
+		var h http.Handler = px
+		if httpsPort != 0 {
+			h = proxy.RedirectHTTPS(px, httpsPort)
+		}
+		addrs := listenerAddrs(plain.lns)
 		svc.SetProxy(api.Listener{Addrs: addrs, Listening: true})
 		wg.Go(func() {
-			if err := proxy.Serve(ctx, px, lns); err != nil {
+			if err := proxy.Serve(ctx, h, plain.lns); err != nil {
 				slog.Error("proxy stopped", "err", err)
 				svc.SetProxy(api.Listener{Addrs: addrs, Error: err.Error()})
 			}
@@ -140,18 +178,73 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 	return err
 }
 
-// proxyListeners gets the HTTP listeners from the helper when allowed, else
-// binds opts.httpAddrs directly.
-func proxyListeners(ctx context.Context, opts daemonOptions) ([]net.Listener, error) {
+type listenerSet struct {
+	lns []net.Listener
+	err error
+}
+
+// proxyListeners returns the plain HTTP and the HTTPS listeners. When allowed,
+// it asks the helper first and treats its port 443 sockets as HTTPS; any set
+// the helper did not provide is bound directly from opts.
+func proxyListeners(ctx context.Context, opts daemonOptions) (plain, secure listenerSet) {
 	if opts.useHelper {
 		lns, err := platform.Current().HelperListeners(ctx)
 		if err == nil {
-			slog.Info("proxy listeners received from helper", "count", len(lns))
-			return lns, nil
+			for _, ln := range lns {
+				if ln.Addr().(*net.TCPAddr).Port == 443 {
+					secure.lns = append(secure.lns, ln)
+				} else {
+					plain.lns = append(plain.lns, ln)
+				}
+			}
+			slog.Info("proxy listeners received from helper", "http", len(plain.lns), "https", len(secure.lns))
+		} else {
+			slog.Info("helper unavailable; binding proxy ports directly", "err", err)
 		}
-		slog.Info("helper unavailable; binding proxy ports directly", "err", err)
 	}
-	return proxy.Listen(opts.httpAddrs)
+	if len(plain.lns) == 0 {
+		plain.lns, plain.err = proxy.Listen(opts.httpAddrs)
+	}
+	if len(secure.lns) == 0 {
+		secure.lns, secure.err = proxy.Listen(opts.httpsAddrs)
+		if secure.err != nil && opts.useHelper {
+			secure.err = fmt.Errorf("%w; re-run 'sb setup' so the helper binds port 443", secure.err)
+		}
+	}
+	return plain, secure
+}
+
+// newIssuer loads or creates the local CA and serves names that only match
+// through a wildcard route with a wildcard certificate for their parent, so
+// one certificate covers all siblings.
+func newIssuer(tlds []string, px proxy.Proxy) (*pki.Issuer, error) {
+	dir, err := pki.DefaultDir()
+	if err != nil {
+		return nil, err
+	}
+	ca, err := pki.LoadOrCreate(dir, tlds)
+	if err != nil {
+		return nil, fmt.Errorf("local CA: %w", err)
+	}
+	for _, tld := range tlds {
+		if !ca.Permits("x." + tld) {
+			slog.Warn("local CA does not cover a TLD; run 'sb doctor'", "tld", tld)
+		}
+	}
+	return pki.NewIssuer(ca, pki.IssuerOptions{NameFor: func(host string) string {
+		if _, wildcard, ok := px.Lookup(host); ok && wildcard {
+			if _, parent, _ := strings.Cut(host, "."); strings.Contains(parent, ".") {
+				return "*." + parent
+			}
+		}
+		return host
+	}}), nil
+}
+
+func closeListeners(lns []net.Listener) {
+	for _, ln := range lns {
+		_ = ln.Close()
+	}
 }
 
 func listenerAddrs(lns []net.Listener) []string {

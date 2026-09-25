@@ -26,6 +26,9 @@ type Proxy interface {
 	SetRoutes(routes []config.Route) error
 	// Routes returns a copy of the current route table.
 	Routes() []config.Route
+	// Lookup returns the route serving host, and whether it matched through
+	// a wildcard rather than by exact name.
+	Lookup(host string) (route config.Route, wildcard, ok bool)
 }
 
 // ReverseProxy is the standard-library Proxy built on httputil.ReverseProxy.
@@ -97,6 +100,19 @@ func (p *ReverseProxy) SetRoutes(routes []config.Route) error {
 // Routes implements Proxy.
 func (p *ReverseProxy) Routes() []config.Route {
 	return slices.Clone(p.table.Load().routes)
+}
+
+// Lookup implements Proxy.
+func (p *ReverseProxy) Lookup(host string) (config.Route, bool, bool) {
+	t := p.table.Load()
+	host = normalizeHost(host)
+	if b := t.exact[host]; b != nil {
+		return b.route, false, true
+	}
+	if b := t.lookup(host); b != nil {
+		return b.route, true, true
+	}
+	return config.Route{}, false, false
 }
 
 // ServeHTTP implements http.Handler.

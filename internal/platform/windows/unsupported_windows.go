@@ -53,3 +53,21 @@ func (Platform) LookupHost(context.Context, string) ([]string, error) { return n
 
 // PortOwner is unsupported.
 func (Platform) PortOwner(context.Context, int) (string, error) { return "", ErrUnsupported }
+
+// TrustPlan is empty: nothing would be changed.
+func (Platform) TrustPlan(string) []string { return nil }
+
+// UntrustPlan is empty: nothing would be changed.
+func (Platform) UntrustPlan(string) []string { return nil }
+
+// TrustCA is unsupported.
+func (Platform) TrustCA(string) error { return ErrUnsupported }
+
+// UntrustCA is unsupported.
+func (Platform) UntrustCA(string) error { return ErrUnsupported }
+
+// TrustNSS is unsupported.
+func (Platform) TrustNSS(string) error { return ErrUnsupported }
+
+// UntrustNSS is unsupported.
+func (Platform) UntrustNSS(string) error { return ErrUnsupported }

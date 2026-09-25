@@ -53,6 +53,7 @@ the proxy is rolled back and the request returns `500`.
   "dns":   {"addrs": ["127.0.0.1:15353"], "listening": true},
   "proxy": {"addrs": ["127.0.0.1:80", "[::1]:80"], "listening": false,
             "error": "proxy: listen 127.0.0.1:80: bind: permission denied; ..."},
+  "https": {"addrs": ["127.0.0.1:443", "[::1]:443"], "listening": true},
   "routes": [RouteStatus, ...]
 }
 ```
@@ -81,8 +82,9 @@ rather than slowing down route changes, so reload `GET /v1/status` after reconne
 ## Daemon startup
 
 `sb daemon` loads `routes.toml`, then claims the socket, then starts the DNS server
-(`--dns-addr`, default `127.0.0.1:15353`) and the proxy (`--http-addr`, default
-`127.0.0.1:80,[::1]:80`).
+(`--dns-addr`, default `127.0.0.1:15353`), the HTTPS proxy (`--https-addr`, default
+`127.0.0.1:443,[::1]:443`) and the HTTP proxy (`--http-addr`, default
+`127.0.0.1:80,[::1]:80`). `proxy` in the status is plain HTTP; `https` is HTTPS.
 
 If DNS or the proxy cannot bind, for example port 80 without the privileged helper, the
 daemon keeps running. `GET /v1/status` and `sb ls` report the error. To try the daemon
