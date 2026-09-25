@@ -25,10 +25,10 @@ const EnvConfigDir = "SWITCHBOARD_CONFIG_DIR"
 
 // Route maps a hostname to a local port.
 type Route struct {
-	Name          string `toml:"name"`
-	Port          int    `toml:"port"`
-	Wildcard      bool   `toml:"wildcard"`
-	RedirectHTTPS bool   `toml:"redirect_https"`
+	Name          string `toml:"name" json:"name"`
+	Port          int    `toml:"port" json:"port"`
+	Wildcard      bool   `toml:"wildcard" json:"wildcard"`
+	RedirectHTTPS bool   `toml:"redirect_https" json:"redirect_https"`
 }
 
 // Config is the on-disk route table.

@@ -14,7 +14,6 @@ func TestCommands(t *testing.T) {
 		wantErr error
 		errText string
 	}{
-		{name: "daemon", args: []string{"daemon"}, wantErr: errNotImplemented},
 		{name: "helper", args: []string{"helper"}, wantErr: errNotImplemented},
 		{name: "add", args: []string{"add", "myapp", "7000"}, wantErr: errNotImplemented},
 		{name: "rm", args: []string{"rm", "myapp"}, wantErr: errNotImplemented},
@@ -24,6 +23,7 @@ func TestCommands(t *testing.T) {
 		{name: "setup", args: []string{"setup"}, wantErr: errNotImplemented},
 		{name: "uninstall", args: []string{"uninstall"}, wantErr: errNotImplemented},
 		{name: "add missing port", args: []string{"add", "myapp"}, errText: "accepts 2 arg(s)"},
+		{name: "daemon extra arg", args: []string{"daemon", "x"}, errText: "unknown command"},
 		{name: "ls extra arg", args: []string{"ls", "x"}, errText: "unknown command"},
 		{name: "unknown command", args: []string{"frobnicate"}, errText: "unknown command"},
 	}
