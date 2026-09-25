@@ -35,7 +35,7 @@ with a CLI (`sb`), a web dashboard, and a Tauri tray app, for macOS, Linux and W
 ## Architecture
 
 - One Go binary, three modes: `sb daemon`, `sb <command>` (CLI), `sb helper` (privileged).
-- Daemon: route table, DNS server (127.0.0.1:5353), reverse proxy (:80/:443), local CA,
+- Daemon: route table, DNS server (127.0.0.1:15353), reverse proxy (:80/:443), local CA,
   control API (JSON over HTTP on a Unix socket / Windows named pipe, versioned /v1).
 - Helper: runs as root/SYSTEM. ONLY does: bind 80/443 and pass sockets to the daemon,
   write/remove split-DNS config, install/remove the CA from trust stores. Nothing else.
@@ -103,7 +103,7 @@ Propose the plan first; don't write code until I approve.
 
 ```
 Read AGENTS.md. Implement internal/dns: a DNS server using miekg/dns that listens on a
-configurable address (default 127.0.0.1:5353, UDP and TCP) and answers A with 127.0.0.1
+configurable address (default 127.0.0.1:15353, UDP and TCP) and answers A with 127.0.0.1
 and AAAA with ::1 for any name under the configured TLDs (default ["test"]), including
 the bare TLD's subdomains at any depth. Everything else returns REFUSED; it must never
 forward queries. Support changing TLDs at runtime without restart. Write unit tests
@@ -145,7 +145,7 @@ Read AGENTS.md. Implement internal/platform/darwin behind a Platform interface w
 InstallResolver(tld, port), RemoveResolver(tld), InstallService(), RemoveService(),
 and the helper protocol. `sb setup` must: print exactly what it will change, ask for
 confirmation, then (via a single sudo invocation of `sb helper install`) write
-/etc/resolver/<tld> ("nameserver 127.0.0.1\nport 5353"), install a LaunchDaemon for the
+/etc/resolver/<tld> ("nameserver 127.0.0.1\nport 15353"), install a LaunchDaemon for the
 helper that binds :80 and passes the listener to the user daemon over its socket, and a
 LaunchAgent for `sb daemon`. `sb uninstall` reverses every step and is idempotent.
 Write the code and tests for file generation, but DO NOT run setup, sudo, or launchctl
@@ -190,7 +190,7 @@ Then add HTTPS checks to `sb doctor`.
 ```
 Read AGENTS.md. Implement internal/platform/linux with the same Platform interface as
 darwin. Split DNS: if systemd-resolved is active, write
-/etc/systemd/resolved.conf.d/switchboard-<tld>.conf with DNS=127.0.0.1:5353 and
+/etc/systemd/resolved.conf.d/switchboard-<tld>.conf with DNS=127.0.0.1:15353 and
 Domains=~<tld>, then restart resolved; otherwise, if NetworkManager uses dnsmasq, write a
 dnsmasq drop-in; otherwise fall back to hosts-file entries for exact names and warn that
 wildcards won't work. Services: systemd system unit for the helper, user unit for the
