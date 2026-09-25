@@ -112,7 +112,7 @@ Requirements are tagged P0 (v0.1–v0.2), P1 (before v1.0) or P2 (after v1.0).
 
 ### DNS
 
-- P0: Built-in DNS server on `127.0.0.1:5353` answering `*.<tld>` with `127.0.0.1` and `::1`.
+- P0: Built-in DNS server on `127.0.0.1:15353` answering `*.<tld>` with `127.0.0.1` and `::1`. (Not 5353: that is the mDNS port, already bound by mDNSResponder, Avahi, browsers and media apps.)
 - P0: Split-DNS registration: `/etc/resolver/<tld>` (macOS), systemd-resolved drop-in (Linux), NRPT rule (Windows).
 - P1: Hosts-file fallback for systems without split-DNS, exact names only.
 - P1: mDNS announcer for `.local` mode.
@@ -184,7 +184,7 @@ One Go binary provides the daemon, CLI and helper modes; the tray app is a separ
 ```mermaid
 flowchart LR
   B[Browser / curl] -->|myapp.test?| OS[OS resolver]
-  OS -->|split DNS| DNS[Switchboard DNS<br/>127.0.0.1:5353]
+  OS -->|split DNS| DNS[Switchboard DNS<br/>127.0.0.1:15353]
   B -->|HTTPS :443| PX[Reverse proxy<br/>+ local CA]
   PX --> A1[App :7000]
   PX --> A2[App :7001]
