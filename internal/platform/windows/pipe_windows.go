@@ -31,6 +31,10 @@ func ListenPipe(name string) (net.Listener, error) {
 		return nil, err
 	}
 	ln, err := winio.ListenPipe(name, &winio.PipeConfig{SecurityDescriptor: PipeSDDL(sid)})
+	// FILE_FLAG_FIRST_PIPE_INSTANCE reports an existing pipe as access denied.
+	if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		return nil, fmt.Errorf("a daemon is already running on %s (or another program holds that pipe); stop it first", name)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w; is another Switchboard daemon running?", name, err)
 	}

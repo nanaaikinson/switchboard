@@ -57,9 +57,13 @@ func TestPipeCantBeTakenTwice(t *testing.T) {
 	}
 	defer ln.Close()
 	// A second server (a squatter, or a second daemon) is refused.
-	if ln2, err := ListenPipe(name); err == nil {
+	ln2, err := ListenPipe(name)
+	if err == nil {
 		ln2.Close()
 		t.Fatal("second ListenPipe succeeded")
+	}
+	if !strings.Contains(err.Error(), "already running") {
+		t.Errorf("err = %v, want it to say a daemon is already running", err)
 	}
 }
 

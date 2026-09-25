@@ -193,9 +193,11 @@ func TestFindProbesSockets(t *testing.T) {
 
 func TestDefaultSockets(t *testing.T) {
 	socks := env(map[string]string{"XDG_RUNTIME_DIR": "/run/user/1000"}, "/home/me").Sockets()
+	// Paths joined onto $HOME or $XDG_RUNTIME_DIR use the OS separator.
 	for _, want := range []string{
-		"/var/run/docker.sock", "/home/me/.orbstack/run/docker.sock", "/home/me/.colima/default/docker.sock",
-		"/home/me/.docker/run/docker.sock", "/run/user/1000/podman/podman.sock", "/run/podman/podman.sock",
+		"/var/run/docker.sock", filepath.FromSlash("/home/me/.orbstack/run/docker.sock"),
+		filepath.FromSlash("/home/me/.colima/default/docker.sock"), filepath.FromSlash("/home/me/.docker/run/docker.sock"),
+		filepath.FromSlash("/run/user/1000/podman/podman.sock"), "/run/podman/podman.sock",
 	} {
 		if !slices.Contains(socks, want) {
 			t.Errorf("Sockets() missing %s: %v", want, socks)

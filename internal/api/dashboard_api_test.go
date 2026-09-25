@@ -36,7 +36,7 @@ func TestReservedNames(t *testing.T) {
 	if _, _, err := s.Put(config.Route{Name: "api.switchboard", Port: 1}); err != nil {
 		t.Errorf("a subdomain is fine: %v", err)
 	}
-	res, err := s.Apply(ApplyRequest{File: "/p/switchboard.toml", Routes: []config.Route{{Name: "switchboard", Port: 2}}})
+	res, err := s.Apply(ApplyRequest{File: absPath("/p/switchboard.toml"), Routes: []config.Route{{Name: "switchboard", Port: 2}}})
 	if err != nil || len(res.Conflicts) != 1 || res.Conflicts[0].Owner != "the Switchboard dashboard" {
 		t.Errorf("Apply: %+v, %v", res, err)
 	}

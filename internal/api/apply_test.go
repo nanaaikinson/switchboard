@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,10 +11,20 @@ import (
 	"github.com/nanaaikinson/switchboard/internal/config"
 )
 
-const (
-	fileA = "/work/a/switchboard.toml"
-	fileB = "/work/b/switchboard.toml"
+var (
+	fileA = absPath("/work/a/switchboard.toml")
+	fileB = absPath("/work/b/switchboard.toml")
 )
+
+// absPath makes a slash path absolute on this OS; on Windows "/work" alone
+// has no drive letter, so Apply would refuse it.
+func absPath(p string) string {
+	abs, err := filepath.Abs(filepath.FromSlash(p))
+	if err != nil {
+		panic(err)
+	}
+	return abs
+}
 
 func rt(name string, port int) config.Route {
 	return config.Route{Name: name, Port: port, RedirectHTTPS: true}
