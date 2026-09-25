@@ -26,16 +26,16 @@ type Client struct {
 	http   *http.Client
 }
 
-// New returns a client for the daemon listening on socketPath.
+// New returns a client for the daemon listening on socketPath: a Unix
+// socket, or a named pipe on Windows (see api.DefaultSocketPath).
 func New(socketPath string) *Client {
-	var d net.Dialer
 	return &Client{
 		socket: socketPath,
 		http: &http.Client{
 			Timeout: 10 * time.Second,
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					return d.DialContext(ctx, "unix", socketPath)
+					return Dial(ctx, socketPath)
 				},
 			},
 		},
@@ -116,7 +116,7 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) (int,
 	resp, err := c.http.Do(req)
 	if err != nil {
 		var opErr *net.OpError
-		if errors.As(err, &opErr) && opErr.Op == "dial" {
+		if errors.Is(err, errNoDaemon) || errors.As(err, &opErr) && opErr.Op == "dial" {
 			return 0, fmt.Errorf("%w (no daemon on %s); start it with 'sb daemon'", ErrDaemonNotRunning, c.socket)
 		}
 		return 0, fmt.Errorf("%s %s: %w", method, path, err)

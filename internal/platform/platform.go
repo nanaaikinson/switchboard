@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 )
 
@@ -76,6 +77,7 @@ type Platform interface {
 // Options identifies the user Switchboard is installed for.
 type Options struct {
 	UID    int
+	User   string // login name; DOMAIN\name on Windows, where UID is -1
 	Home   string
 	SbPath string // absolute path of the sb binary the user runs
 }
@@ -83,6 +85,9 @@ type Options struct {
 // Current returns the platform for the current process's user and binary.
 func Current() Platform {
 	o := Options{UID: os.Getuid()}
+	if u, err := user.Current(); err == nil {
+		o.User = u.Username
+	}
 	o.Home, _ = os.UserHomeDir()
 	if exe, err := os.Executable(); err == nil {
 		if resolved, err := filepath.EvalSymlinks(exe); err == nil {

@@ -7,13 +7,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/nanaaikinson/switchboard/internal/api"
+	"github.com/nanaaikinson/switchboard/internal/api/client"
 )
 
 func TestPauseAndResume(t *testing.T) {
@@ -38,7 +37,7 @@ func TestPauseAndResume(t *testing.T) {
 	// Watch the event stream for paused.changed.
 	events := make(chan string, 8)
 	httpc := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, "unix", filepath.Join(dir, api.SocketName))
+		return client.Dial(ctx, controlAddr())
 	}}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

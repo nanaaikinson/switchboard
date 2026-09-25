@@ -255,8 +255,8 @@ func TestUntrust(t *testing.T) {
 }
 
 func TestHelperRequiresRoot(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root")
+	if isAdmin() { // root, or an elevated Windows process (GitHub's Windows runners are)
+		t.Skip("running with administrator rights: the helper would really run")
 	}
 	for _, args := range [][]string{
 		{"helper", "install", "--uid", "501", "--home", "/Users/x", "--sb-path", "/usr/local/bin/sb"},
@@ -266,7 +266,7 @@ func TestHelperRequiresRoot(t *testing.T) {
 		{"helper", "untrust", "--ca-cert", "/tmp/ca.pem"},
 	} {
 		_, err := runWithInput(t, "", args...)
-		if err == nil || !strings.Contains(err.Error(), "must run as root") {
+		if err == nil || !strings.Contains(err.Error(), "must run as root") && !strings.Contains(err.Error(), "must run as administrator") {
 			t.Errorf("sb %s: err = %v, want root refusal", strings.Join(args, " "), err)
 		}
 	}

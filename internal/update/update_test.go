@@ -18,6 +18,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -209,7 +210,7 @@ func TestInstallID(t *testing.T) {
 		t.Error("install ID changed between calls")
 	}
 	fi, _ := os.Stat(filepath.Join(dir, InstallIDFile))
-	if fi.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("mode %v", fi.Mode())
 	}
 	if err := os.WriteFile(filepath.Join(dir, InstallIDFile), []byte("corrupt"), 0o600); err != nil {
@@ -313,7 +314,7 @@ func TestSwapAndRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi, _ := os.Stat(staged); fi.Mode().Perm()&0o100 == 0 || filepath.Dir(staged) != dir {
+	if fi, _ := os.Stat(staged); runtime.GOOS != "windows" && fi.Mode().Perm()&0o100 == 0 || filepath.Dir(staged) != dir {
 		t.Errorf("staged %s mode %v", staged, fi.Mode())
 	}
 	if err := Swap(exe, staged); err != nil {

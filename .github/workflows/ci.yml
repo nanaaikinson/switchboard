@@ -14,9 +14,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      # Keep LF endings on Windows: gofmt and the signed test fixtures need them.
+      - name: Disable CRLF conversion
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
@@ -31,12 +36,41 @@ jobs:
         run: GOOS=windows GOARCH=amd64 go build ./...
 
       - name: Test
+        if: runner.os != 'Windows'
         run: go test -race ./...
+
+      # -race needs cgo, which the Windows runner's toolchain doesn't set up.
+      - name: Test (windows)
+        if: runner.os == 'Windows'
+        run: go test ./...
 
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13
+
+  powershell:
+    name: powershell
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          $r = 'install/install.ps1', 'test/install/install-test.ps1' | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Severity Information, Warning, Error }
+          $r | Format-Table -AutoSize ScriptName, RuleName, Line, Message
+          if ($r) { exit 1 }
+
+      # Both the Windows PowerShell 5.1 that ships with Windows and pwsh 7.
+      - name: Test install.ps1 (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./test/install/install-test.ps1
+
+      - name: Test install.ps1 (pwsh)
+        shell: pwsh
+        run: ./test/install/install-test.ps1
 
   shellcheck:
     name: shellcheck

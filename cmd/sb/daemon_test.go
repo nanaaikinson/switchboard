@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -69,8 +70,22 @@ func startDaemon(t *testing.T, opts daemonOptions) {
 	})
 }
 
-func daemonClient(dir string) *client.Client {
-	return client.New(filepath.Join(dir, api.SocketName))
+func daemonClient(string) *client.Client { return client.New(controlAddr()) }
+
+// controlAddr is the daemon's control address for the test's config dir: a
+// Unix socket there, or a named pipe on Windows.
+func controlAddr() string {
+	addr, err := api.DefaultSocketPath()
+	if err != nil {
+		panic(err)
+	}
+	return addr
+}
+
+// addrInUse reports whether msg is a bind error for an address in use, in
+// the words of any OS.
+func addrInUse(msg string) bool {
+	return strings.Contains(msg, "address already in use") || strings.Contains(msg, "Only one usage of each socket address")
 }
 
 func TestDaemonServesAndPersistsRoutes(t *testing.T) {
@@ -166,7 +181,7 @@ func TestDaemonDegradesWhenPortsUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Proxy.Listening || !strings.Contains(st.Proxy.Error, "address already in use") {
+	if st.Proxy.Listening || !addrInUse(st.Proxy.Error) {
 		t.Errorf("proxy = %+v, want not listening with bind error", st.Proxy)
 	}
 	if !st.DNS.Listening {
@@ -183,7 +198,7 @@ func TestDaemonRejectsBadConfig(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "upgrade sb") {
 		t.Errorf("err = %v, want schema error", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, api.SocketName)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, api.SocketName)); runtime.GOOS != "windows" && !os.IsNotExist(err) {
 		t.Error("socket created despite bad config")
 	}
 }

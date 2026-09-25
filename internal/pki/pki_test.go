@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -58,6 +59,9 @@ func TestCreateCA(t *testing.T) {
 	}
 
 	for name, want := range map[string]os.FileMode{"ca/ca-key.pem": 0o600, "ca/ca.pem": 0o644, "ca": 0o700, ".": 0o700} {
+		if runtime.GOOS == "windows" {
+			break // no Unix permission bits
+		}
 		fi, err := os.Stat(filepath.Join(dir, name))
 		if err != nil {
 			t.Fatal(err)
@@ -255,7 +259,7 @@ func TestRenewal(t *testing.T) {
 		t.Error("renewed cert not cached on disk")
 	}
 	fi, err := os.Stat(filepath.Join(ca.dir, "leaves", "myapp.test.pem"))
-	if err != nil || fi.Mode().Perm() != 0o600 {
+	if err != nil || runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("leaf file: %v, mode %v", err, fi.Mode())
 	}
 }

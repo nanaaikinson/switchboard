@@ -31,8 +31,12 @@ func TestClientOverUnixSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sock := filepath.Join(dir, api.SocketName)
-	ln, err := api.ListenUnix(sock)
+	t.Setenv(config.EnvConfigDir, dir)
+	sock, err := api.DefaultSocketPath() // a Unix socket, or a named pipe on Windows
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := api.ListenControl(sock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +82,12 @@ func TestClientDaemonNotRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	c := client.New(filepath.Join(dir, api.SocketName))
+	t.Setenv(config.EnvConfigDir, dir)
+	sock, err := api.DefaultSocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := client.New(sock)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if _, err := c.Status(ctx); !errors.Is(err, client.ErrDaemonNotRunning) {

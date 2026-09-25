@@ -55,7 +55,7 @@ detect_os() {
 	case "$(uname -s)" in
 	Darwin) echo darwin ;;
 	Linux) echo linux ;;
-	MINGW* | MSYS* | CYGWIN*) die "on Windows, download the .zip from https://github.com/$REPO/releases" ;;
+	MINGW* | MSYS* | CYGWIN*) die "on Windows, use install.ps1 in PowerShell: irm https://raw.githubusercontent.com/$REPO/main/install/install.ps1 | iex" ;;
 	*) die "unsupported OS $(uname -s); see https://github.com/$REPO/releases" ;;
 	esac
 }

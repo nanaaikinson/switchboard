@@ -88,7 +88,7 @@ func TestCLIAgainstDaemon(t *testing.T) {
 	}
 
 	// The proxy really routes the new name.
-	c := client.New(filepath.Join(dir, api.SocketName))
+	c := client.New(controlAddr())
 	st, err := c.Status(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +163,7 @@ func TestLsWarnsWhenProxyNotListening(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "warning: Proxy is not listening") || !strings.Contains(out, "address already in use") {
+	if !strings.Contains(out, "warning: Proxy is not listening") || !addrInUse(out) {
 		t.Errorf("ls did not warn about the proxy:\n%s", out)
 	}
 }

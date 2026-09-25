@@ -11,6 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"os/user"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -43,25 +46,29 @@ func newSetupCmd() *cobra.Command {
 		Use:   "setup",
 		Short: "One-time system setup (asks for your password once)",
 		Long: `Configure the system so Switchboard names work. sb setup prints every change,
-asks for confirmation, then runs a single 'sudo sb helper install' that:
+asks for confirmation, then runs a single 'sudo sb helper install' (on
+Windows: one UAC prompt) that:
 
   - sends .<tld> lookups to Switchboard's DNS server
-      macOS: /etc/resolver/<tld>
-      Linux: a systemd-resolved or NetworkManager dnsmasq drop-in, or, if
-             neither is in use, a block in /etc/hosts (exact names only;
-             wildcard routes don't resolve)
+      macOS:   /etc/resolver/<tld>
+      Linux:   a systemd-resolved or NetworkManager dnsmasq drop-in, or, if
+               neither is in use, a block in /etc/hosts (exact names only;
+               wildcard routes don't resolve)
+      Windows: an NRPT rule for .<tld> pointing at 127.0.0.1
   - installs the privileged helper as a root service (a launchd daemon or a
-    systemd unit) that binds ports 80 and 443 and hands them to your daemon
-  - installs a per-user service (a LaunchAgent or a systemd user unit) that
-    runs 'sb daemon' as you
+    systemd unit) that binds ports 80 and 443 and hands them to your daemon.
+    Windows needs no helper: the daemon binds 53, 80 and 443 itself
+  - installs a per-user service (a LaunchAgent, a systemd user unit, or a
+    Scheduled Task at logon on Windows) that runs 'sb daemon' as you
   - trusts Switchboard's local CA (created now if needed) in the system trust
-    store, so HTTPS names have no certificate warnings
+    store (LocalMachine\Root on Windows), so HTTPS names have no certificate
+    warnings
 
 It then adds the CA to your browsers' NSS stores (Firefox; Chrome on Linux)
 as you, not root.
 
 Run it as your normal user, not with sudo. Undo everything with 'sb uninstall'.
-macOS and Linux (systemd) only for now.`,
+Supports macOS, Linux (systemd) and Windows 10 1809+ / 11.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if os.Geteuid() == 0 {
@@ -78,7 +85,7 @@ macOS and Linux (systemd) only for now.`,
 			tld, port := defaultTLD(), defaultDNSPort()
 			argv := []string{opts.SbPath, "helper", "install",
 				"--uid", strconv.Itoa(opts.UID), "--home", opts.Home, "--sb-path", opts.SbPath,
-				"--tld", tld, "--dns-port", strconv.Itoa(port), "--ca-cert", ca.CertPath()}
+				"--tld", tld, "--dns-port", strconv.Itoa(port), "--ca-cert", ca.CertPath(), "--user", opts.User}
 			ran, err := runPrivileged(cmd, p, f, privPlan{
 				Title:   "sb setup will make these system changes:",
 				Changes: append(p.InstallPlan(tld, port), p.TrustPlan(ca.CertPath())...),
@@ -110,7 +117,9 @@ func newUninstallCmd() *cobra.Command {
 stop and remove the daemon's user service and the helper's root service, the
 helper binary, its logs and socket, the split-DNS config if Switchboard wrote
 it, and the local CA from the system trust store. Then remove the CA from
-your browsers' NSS stores, as you.
+your browsers' NSS stores, as you. On Windows (one UAC prompt): the logon
+task, Switchboard's NRPT rule and the CA in LocalMachine\Root; rules and
+tasks made by other tools are left alone.
 
 Safe to run more than once; anything already gone is skipped. Your routes and
 the CA files in the config dir are kept; delete that folder to remove them too.`,
@@ -126,7 +135,7 @@ the CA files in the config dir are kept; delete that folder to remove them too.`
 				return fmt.Errorf("uninstall: %w", p.Validate())
 			}
 			argv := []string{opts.SbPath, "helper", "uninstall",
-				"--uid", strconv.Itoa(opts.UID), "--home", opts.Home, "--tld", tld}
+				"--uid", strconv.Itoa(opts.UID), "--home", opts.Home, "--tld", tld, "--user", opts.User}
 			caCert, err := existingCACert()
 			if err != nil {
 				return fmt.Errorf("uninstall: %w", err)
@@ -160,6 +169,9 @@ the CA files in the config dir are kept; delete that folder to remove them too.`
 // currentPlatform is swapped in tests.
 var currentPlatform = func() (platform.Platform, platform.Options) {
 	o := platform.Options{UID: os.Getuid()}
+	if u, err := user.Current(); err == nil {
+		o.User = u.Username
+	}
 	o.Home, _ = os.UserHomeDir()
 	o.SbPath, _ = os.Executable()
 	return platform.New(o), o
@@ -203,7 +215,8 @@ func runPrivileged(cmd *cobra.Command, p platform.Platform, f privFlags, pl priv
 	for i, line := range pl.Changes {
 		fmt.Fprintf(out, "  %d. %s\n", i+1, line)
 	}
-	if f.dialog {
+	dialog := f.dialog || runtime.GOOS == "windows" // Windows has no sudo; UAC asks
+	if dialog {
 		fmt.Fprintf(out, "\nIt runs this one command as administrator; your system asks for your password:\n\n  %s\n\n%s\n", shellJoin(pl.Command), pl.Notes)
 	} else {
 		fmt.Fprintf(out, "\nIt runs this one command with sudo (you may be asked for your password):\n\n  sudo %s\n\n%s\n", shellJoin(pl.Command), pl.Notes)
@@ -219,16 +232,36 @@ func runPrivileged(cmd *cobra.Command, p platform.Platform, f privFlags, pl priv
 			return false, nil
 		}
 	}
-	if !f.dialog {
+	if !dialog {
 		return true, runSudo(cmd.Context(), pl.Command, cmd.InOrStdin(), out, cmd.ErrOrStderr())
 	}
-	c, err := p.AdminCommand(pl.Command, pl.Prompt)
+	argv := pl.Command
+	var logPath string
+	if runtime.GOOS == "windows" {
+		// UAC starts the elevated process in its own hidden console, so it
+		// writes what it did to a file, shown here afterwards.
+		logFile, err := os.CreateTemp("", "sb-helper-*.log")
+		if err != nil {
+			return false, err
+		}
+		logPath = logFile.Name()
+		_ = logFile.Close()
+		defer func() { _ = os.Remove(logPath) }()
+		argv = append(slices.Clone(argv), "--log", logPath)
+	}
+	c, err := p.AdminCommand(argv, pl.Prompt)
 	if err != nil {
 		return false, err
 	}
 	c.Stdout, c.Stderr = out, cmd.ErrOrStderr()
-	if err := runAdmin(c); err != nil {
-		return false, fmt.Errorf("%w (if you cancelled the password dialog, nothing was changed)", err)
+	runErr := runAdmin(c)
+	if logPath != "" {
+		if b, err := os.ReadFile(logPath); err == nil && len(b) > 0 { //nolint:gosec // G304: our temp file
+			_, _ = out.Write(b)
+		}
+	}
+	if runErr != nil {
+		return false, fmt.Errorf("%w (if you cancelled the password dialog, nothing was changed)", runErr)
 	}
 	return true, nil
 }
@@ -261,9 +294,26 @@ Run via 'sb setup', 'sb uninstall', 'sb trust' and 'sb untrust', never by hand.`
 		Hidden: true,
 	}
 	var o platform.Options
-	var tld, caCert string
+	var tld, caCert, logPath string
 	var dnsPort int
-	requireRoot := func(*cobra.Command, []string) error {
+	requireRoot := func(cmd *cobra.Command, _ []string) error {
+		if logPath != "" {
+			// Elevated on Windows: no console to show; sb setup reads the file.
+			// If it isn't the file setup made, carry on without the log.
+			if f, err := openHelperLog(logPath); err == nil {
+				cmd.SetOut(f)
+				cmd.SetErr(f)
+			} else {
+				cmd.SetOut(io.Discard)
+				cmd.SetErr(io.Discard)
+			}
+		}
+		if runtime.GOOS == "windows" {
+			if !isAdmin() {
+				return errors.New("sb helper must run as administrator; use 'sb setup' or 'sb uninstall' instead")
+			}
+			return nil
+		}
 		if os.Geteuid() != 0 {
 			return errors.New("sb helper must run as root; use 'sb setup' or 'sb uninstall' instead")
 		}
@@ -295,7 +345,7 @@ Run via 'sb setup', 'sb uninstall', 'sb trust' and 'sb untrust', never by hand.`
 	uninstall := &cobra.Command{
 		Use: "uninstall", Short: "Remove system changes (root)", Args: cobra.NoArgs, PreRunE: requireRoot,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if o.UID <= 0 {
+			if o.UID <= 0 && runtime.GOOS != "windows" { // Windows has no uids
 				return errors.New("--uid must be a regular user")
 			}
 			p := platform.New(o)
@@ -344,6 +394,10 @@ Run via 'sb setup', 'sb uninstall', 'sb trust' and 'sb untrust', never by hand.`
 	}
 	for _, c := range []*cobra.Command{install, uninstall, trust, untrust} {
 		c.Flags().StringVar(&caCert, "ca-cert", "", "absolute path of the local CA certificate")
+		c.Flags().StringVar(&logPath, "log", "", "write output to this file (for elevated runs without a console)")
+	}
+	for _, c := range []*cobra.Command{install, uninstall} {
+		c.Flags().StringVar(&o.User, "user", "", "login name of that user (DOMAIN\\name on Windows)")
 	}
 	for _, c := range []*cobra.Command{trust, untrust} {
 		_ = c.MarkFlagRequired("ca-cert")

@@ -40,7 +40,8 @@ The tray app updates itself from **Check for Updates…** in its menu.
 6. **Swap:** the current binary is renamed to `sb.old` (`sb.old.exe` on Windows), and
    the new one to `sb`. If the second rename fails, the old binary is put back.
 7. **Restart the daemon's service:** `launchctl kickstart -k` on macOS,
-   `systemctl --user restart` on Linux. The privileged helper keeps its own root-owned
+   `systemctl --user restart` on Linux, and stopping and starting the logon task on
+   Windows. The privileged helper keeps its own root-owned
    copy of `sb`. Re-run `sb setup` when a release's notes say the helper changed.
 
 If anything fails before step 6, nothing on disk changes. A build without a release

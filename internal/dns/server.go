@@ -13,9 +13,6 @@ import (
 	"github.com/miekg/dns"
 )
 
-// DefaultAddr is the default listen address for UDP and TCP.
-const DefaultAddr = "127.0.0.1:15353"
-
 // ttl is short so TLD changes take effect quickly in OS caches.
 const ttl = 1
 

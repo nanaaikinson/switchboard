@@ -64,6 +64,7 @@ left, or if they weren't signed by the current CA.
 | --- | --- | --- |
 | macOS | `/Library/Keychains/System.keychain`, trusted for SSL and basic X.509, via [smallstep/truststore](https://github.com/smallstep/truststore) (`security add-trusted-cert`). Removal uses `security remove-trusted-cert` and `security delete-certificate` | every Firefox profile with a `cert9.db`; `certutil` from `brew install nss` |
 | Linux | the distro CA bundle, via truststore: `/usr/local/share/ca-certificates` + `update-ca-certificates` (Debian, Ubuntu), `/etc/pki/ca-trust/source/anchors` + `update-ca-trust` (Fedora, RHEL), or `trust extract-compat` (Arch). On Debian-family systems removal also runs `update-ca-certificates --fresh`, which clears the links it would leave behind | `~/.pki/nssdb` (Chrome, Chromium) and Firefox profiles, including the snap's; `certutil` from `libnss3-tools` or `nss-tools` |
+| Windows | `LocalMachine\Root` ("Trusted Root Certification Authorities" for every user), written directly with crypt32 (`CertAddCertificateContextToStore`). truststore only writes `CurrentUser\Root`, which shows a confirmation dialog per user and can't be done from the elevated setup step. Removal deletes every copy with the same bytes | none: Firefox reads the Windows store (`security.enterprise_roots.enabled`), and Chrome and Edge use it directly |
 | Who changes it | `sudo sb helper trust` / `untrust`, run by `sb trust`, `sb untrust`, `sb setup` and `sb uninstall` | the `sb` command itself, as you. Skipped when there are no NSS databases |
 
 On macOS, Safari, Chrome, curl and Go programs use the system store. On Linux, curl,
@@ -72,7 +73,7 @@ certificate before trusting it; see the security design in
 [setup-macos.md](setup-macos.md).
 
 `sb untrust` removes trust but keeps the CA files, so `sb trust` restores the same CA.
-The Windows trust store isn't implemented yet.
+On Windows, `sb trust` and `sb untrust` go through one UAC prompt instead of `sudo`.
 
 ## Making a new CA
 

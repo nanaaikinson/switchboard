@@ -4,5 +4,7 @@ package platform
 
 import "github.com/nanaaikinson/switchboard/internal/platform/windows"
 
-// New returns the windows platform. System setup is not implemented yet.
-func New(Options) Platform { return windows.Platform{} }
+// New returns the Windows platform for o.
+func New(o Options) Platform {
+	return windows.New(windows.Options{User: o.User, SbPath: o.SbPath})
+}

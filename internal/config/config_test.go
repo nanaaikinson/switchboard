@@ -75,6 +75,9 @@ func TestSaveFileMode(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	for p, want := range map[string]os.FileMode{path: 0o600, filepath.Dir(path): 0o700} {
+		if runtime.GOOS == "windows" {
+			break // no Unix permission bits
+		}
 		fi, err := os.Stat(p)
 		if err != nil {
 			t.Fatal(err)

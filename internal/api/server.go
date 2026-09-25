@@ -8,8 +8,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/nanaaikinson/switchboard/internal/config"
@@ -17,18 +15,6 @@ import (
 
 // SocketName is the control socket's file name inside the config dir.
 const SocketName = "sb.sock"
-
-// maxSocketPath stays under the smallest sun_path limit (104 bytes on macOS).
-const maxSocketPath = 100
-
-// DefaultSocketPath returns the control socket path in the config dir.
-func DefaultSocketPath() (string, error) {
-	dir, err := config.Dir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, SocketName), nil
-}
 
 // Handler returns the /v1 control API for s.
 func Handler(s *Service) http.Handler {
@@ -172,36 +158,6 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeError(w http.ResponseWriter, code int, err error) {
 	writeJSON(w, code, Error{Error: err.Error()})
-}
-
-// ListenUnix creates the control socket at path with mode 0600. A stale socket
-// is replaced; a live one means another daemon is running.
-func ListenUnix(path string) (net.Listener, error) {
-	if len(path) > maxSocketPath {
-		return nil, fmt.Errorf("api: socket path %s is too long (%d > %d bytes); set %s to a shorter directory",
-			path, len(path), maxSocketPath, config.EnvConfigDir)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, fmt.Errorf("api: create socket dir: %w", err)
-	}
-	if _, err := os.Stat(path); err == nil {
-		if c, err := net.DialTimeout("unix", path, 500*time.Millisecond); err == nil {
-			_ = c.Close()
-			return nil, fmt.Errorf("api: a daemon is already running on %s; stop it first", path)
-		}
-		if err := os.Remove(path); err != nil {
-			return nil, fmt.Errorf("api: remove stale socket %s: %w", path, err)
-		}
-	}
-	ln, err := net.Listen("unix", path)
-	if err != nil {
-		return nil, fmt.Errorf("api: listen on %s: %w", path, err)
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		_ = ln.Close()
-		return nil, fmt.Errorf("api: chmod socket: %w", err)
-	}
-	return ln, nil
 }
 
 // Serve serves the control API on ln until ctx is done.

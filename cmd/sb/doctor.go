@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,8 +25,14 @@ import (
 	"github.com/nanaaikinson/switchboard/internal/platform"
 )
 
-// doctorPorts are the web ports Switchboard serves. Swapped in tests.
-var doctorPorts = []int{80, 443}
+// doctorPorts are the ports Switchboard serves: the web ports, and on
+// Windows DNS too, which must be 53 there. Swapped in tests.
+var doctorPorts = func() []int {
+	if runtime.GOOS == "windows" {
+		return []int{53, 80, 443}
+	}
+	return []int{80, 443}
+}()
 
 // doctorRoots verifies the HTTPS probe; nil means the system trust store,
 // which is the point of the check. Swapped in tests.
@@ -255,7 +262,7 @@ func checkPort(ctx context.Context, p platform.Platform, port int, st api.Status
 	name := "port " + strconv.Itoa(port)
 	var ours []string
 	proxy := st.Proxy
-	for _, l := range []api.Listener{st.Proxy, st.HTTPS} {
+	for _, l := range []api.Listener{st.Proxy, st.HTTPS, st.DNS} {
 		for _, a := range l.Addrs {
 			if n, ok := portOf(a); ok && n == port {
 				ours = append(ours, a)
@@ -268,6 +275,9 @@ func checkPort(ctx context.Context, p platform.Platform, port int, st api.Status
 	}
 	owner, _ := p.PortOwner(ctx, port) // best effort; "" if hidden or unsupported
 	switch {
+	case strings.HasPrefix(owner, "http.sys"):
+		return checkResult{checkFail, name, "held by " + owner,
+			fmt.Sprintf("Something registered port %d with Windows' http.sys (see 'netsh http show servicestate'). Stop it (IIS: 'iisreset /stop' or remove the site's binding; other apps: their settings), then run 'sb setup' again.", port)}
 	case owner != "":
 		return checkResult{checkFail, name, "held by " + owner,
 			fmt.Sprintf("Stop %s or move it off port %d, then re-run 'sb setup' to restart Switchboard.", owner, port)}

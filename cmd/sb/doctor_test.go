@@ -71,17 +71,17 @@ func busyPort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-func addRoute(t *testing.T, dir, name string, port int) {
+func addRoute(t *testing.T, _, name string, port int) {
 	t.Helper()
-	c := client.New(filepath.Join(dir, api.SocketName))
+	c := client.New(controlAddr())
 	if _, _, err := c.Put(context.Background(), config.Route{Name: name, Port: port}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func proxyPort(t *testing.T, dir string) int {
+func proxyPort(t *testing.T, _ string) int {
 	t.Helper()
-	st, err := client.New(filepath.Join(dir, api.SocketName)).Status(context.Background())
+	st, err := client.New(controlAddr()).Status(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,9 +135,9 @@ func TestDoctorAllPass(t *testing.T) {
 	}
 }
 
-func status(t *testing.T, dir string) api.Status {
+func status(t *testing.T, _ string) api.Status {
 	t.Helper()
-	st, err := client.New(filepath.Join(dir, api.SocketName)).Status(context.Background())
+	st, err := client.New(controlAddr()).Status(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,11 +165,28 @@ func TestDoctorHTTPSNotListening(t *testing.T) {
 	useDiag(t, fakeDiag{addrs: []string{"127.0.0.1"}}, busy)
 	out, _ := run(t, "doctor")
 	wantLines(t, out, "       fix: Re-run 'sb setup' so the helper binds port 443 and the daemon restarts.")
-	for _, want := range []string{"[FAIL] https probe.test: HTTPS proxy not listening: ", "address already in use",
+	for _, want := range []string{"[FAIL] https probe.test: HTTPS proxy not listening: ",
 		fmt.Sprintf("[FAIL] port %d: held by a process only visible with sudo", busy)} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
+	}
+	if !addrInUse(out) {
+		t.Errorf("no bind error in:\n%s", out)
+	}
+}
+
+func TestDoctorNamesHTTPSys(t *testing.T) {
+	configDir(t)
+	startDaemon(t, daemonOptions{})
+	held := busyPort(t)
+	useDiag(t, fakeDiag{addrs: []string{"127.0.0.1"}, owners: map[int]string{
+		held: `http.sys: request queue "DefaultAppPool" (HTTP://*:80/) of pid 3248`,
+	}}, held)
+	out, _ := run(t, "doctor")
+	wantLines(t, out, fmt.Sprintf(`[FAIL] port %d: held by http.sys: request queue "DefaultAppPool" (HTTP://*:80/) of pid 3248`, held))
+	if !strings.Contains(out, "netsh http show servicestate") || !strings.Contains(out, "iisreset /stop") {
+		t.Errorf("no http.sys fix:\n%s", out)
 	}
 }
 

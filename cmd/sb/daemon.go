@@ -131,7 +131,7 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 	if err != nil {
 		return err
 	}
-	ctl, err := api.ListenUnix(sock)
+	ctl, err := api.ListenControl(sock)
 	if err != nil {
 		return err
 	}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 // fakeEngine serves the Engine API endpoints Switchboard uses on a Unix socket.
 func fakeEngine(t *testing.T, path string, events ...string) (seen *[]string) {
 	t.Helper()
+	skipOnWindows(t)
 	var paths []string
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /_ping", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("OK")) })
@@ -106,7 +108,17 @@ func unescape(t *testing.T, s string) string {
 	return r.URL.Query().Get("f")
 }
 
+// skipOnWindows skips tests of Unix-socket engines: Docker on Windows uses a
+// named pipe, which Switchboard doesn't support yet.
+func skipOnWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Docker Engine over a Unix socket; Windows uses a named pipe")
+	}
+}
+
 func TestClientReportsAPIErrors(t *testing.T) {
+	skipOnWindows(t)
 	sock := filepath.Join(shortDir(t), "d.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
@@ -149,6 +161,7 @@ func TestFindRespectsDockerHost(t *testing.T) {
 }
 
 func TestFindProbesSockets(t *testing.T) {
+	skipOnWindows(t)
 	dir := shortDir(t)
 	stale := filepath.Join(dir, "stale.sock") // a socket file nobody listens on
 	ln, err := net.Listen("unix", stale)

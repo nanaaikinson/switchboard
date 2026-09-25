@@ -1,6 +1,6 @@
 # GoReleaser config: archives, SHA256SUMS, and .deb/.rpm packages (nfpm).
 # Used by .github/workflows/release.yml and `make dist`. Archive names and the
-# SHA256SUMS file are what install/install.sh downloads; keep them in sync.
+# SHA256SUMS file are what install/install.sh and install.ps1 download; keep them in sync.
 version: 2
 
 project_name: switchboard
@@ -27,7 +27,7 @@ archives:
     format_overrides:
       - goos: windows
         formats: [zip]
-    wrap_in_directory: true # sb_<version>_<os>_<arch>/sb, as install.sh expects
+    wrap_in_directory: true # sb_<version>_<os>_<arch>/sb(.exe), as install.sh and install.ps1 expect
     files: [none*] # the binary only
 
 checksum:

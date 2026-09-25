@@ -61,8 +61,41 @@ undo a per-user setup.
 
 ## Windows
 
-Download the `.zip` for your CPU from the
-[releases page](https://github.com/nanaaikinson/switchboard/releases).
+In PowerShell (Windows PowerShell 5.1 or pwsh 7), as your normal user:
+
+```powershell
+irm https://raw.githubusercontent.com/nanaaikinson/switchboard/main/install/install.ps1 | iex
+```
+
+[install.ps1](../install/install.ps1) does the same steps as install.sh:
+
+1. Detects the CPU (`amd64` or `arm64`), including from a 32-bit PowerShell.
+2. Downloads `sb_<version>_windows_<arch>.zip` and `SHA256SUMS` over HTTPS (TLS 1.2
+   forced on 5.1).
+3. Checks `SHA256SUMS.minisig` if `minisign` is on `PATH` and the script has a release
+   key (skipped for now, as in install.sh).
+4. Checks the zip's SHA-256 with `Get-FileHash`, refusing on a mismatch or if it isn't
+   listed.
+5. Installs `sb.exe` to `%LOCALAPPDATA%\Programs\switchboard`. A running `sb.exe` is
+   renamed to `sb.old.exe` first (Windows can't overwrite a running binary, and
+   `sb rollback` uses that name too).
+6. Adds the folder to your user `PATH`, and to the current session, then tells you to
+   run `sb setup`.
+
+Options, as parameters when you run the file, or environment variables through `iex`:
+
+| Parameter | Variable | |
+| --- | --- | --- |
+| `-Global` | `SB_GLOBAL=1` | install to `%ProgramFiles%\Switchboard` and the machine `PATH`; needs an elevated PowerShell |
+| `-NoModifyPath` | `SB_NO_MODIFY_PATH=1` | don't touch `PATH`; print how to add it |
+| | `SB_VERSION=v0.1.0` | install that release instead of the latest |
+
+```powershell
+$env:SB_VERSION = 'v0.1.0'; irm https://raw.githubusercontent.com/nanaaikinson/switchboard/main/install/install.ps1 | iex
+```
+
+An error doesn't close the window when run through `iex`. Then run `sb setup`; see
+[setup-windows.md](setup-windows.md).
 
 ## Updating
 
@@ -75,14 +108,17 @@ package manager update with that package manager instead (`brew upgrade`, `apt`,
 
 Run `sb uninstall` to revert `sb setup`. Then delete the binary: `rm ~/.local/bin/sb`,
 or `sudo rm /usr/local/bin/sb` if you used `--global`, or remove the `switchboard`
-package.
+package. On Windows, delete `%LOCALAPPDATA%\Programs\switchboard` and remove it from
+your user `PATH` (Settings → System → About → Advanced system settings → Environment
+Variables).
 
 ## Enabling signature checks (maintainers)
 
 1. Generate a key pair offline with `minisign -G`. Keep the secret key out of the repo.
 2. Store it as a release-workflow secret, and have the release job sign `SHA256SUMS` to
    produce `SHA256SUMS.minisig`.
-3. Put the public key (the `RW...` line) in `MINISIGN_PUBKEY` in `install/install.sh`.
+3. Put the public key (the `RW...` line) in `MINISIGN_PUBKEY` in `install/install.sh`
+   and `$SbMinisignPubkey` in `install/install.ps1`.
 
 After step 3, installs with `minisign` present fail closed on releases without a valid
 signature. So finish step 2 and cut one signed release before merging step 3.

@@ -8,7 +8,13 @@ GUI use this API. They never edit the config file or system files directly.
   connect. There is no other authentication.
 - **One daemon at a time:** if a live daemon already owns the socket, a second daemon
   exits with an error. If the file is only left over from a crash, it is replaced.
-- **Windows:** uses the same AF_UNIX socket, which Windows 10 1803 and later support.
+- **Windows:** a named pipe, `\\.\pipe\switchboard-<id>`, instead of the socket. `<id>`
+  is the first 8 bytes, in hex, of SHA-256 over the user's SID and the config dir, so
+  each user (and each `SWITCHBOARD_CONFIG_DIR`) gets its own pipe without the name revealing the
+  SID. Its DACL (`D:P(A;;GA;;;<your SID>)`) lets only you connect, not even
+  administrators. The daemon creates it with `FILE_FLAG_FIRST_PIPE_INSTANCE`, so it
+  can't join a pipe someone else made first. Clients check that the process serving the
+  pipe runs as the same user, and refuse otherwise.
 - **Versioning:** all paths are under `/v1`. Errors are `{"error": "<message>"}` with a
   4xx or 5xx status.
 
@@ -115,7 +121,8 @@ rather than slowing down route changes, so reload `GET /v1/status` after reconne
 ## Daemon startup
 
 `sb daemon` loads `routes.toml`, then claims the socket, then starts the DNS server
-(`--dns-addr`, default `127.0.0.1:15353`), the HTTPS proxy (`--https-addr`, default
+(`--dns-addr`, default `127.0.0.1:15353`, or `127.0.0.1:53` on Windows, since NRPT
+rules can't name a port), the HTTPS proxy (`--https-addr`, default
 `127.0.0.1:443,[::1]:443`) and the HTTP proxy (`--http-addr`, default
 `127.0.0.1:80,[::1]:80`). `proxy` in the status is plain HTTP; `https` is HTTPS.
 
