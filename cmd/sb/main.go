@@ -36,15 +36,7 @@ Run 'sb setup' once, then 'sb add <name> <port>' for each app.`,
 	}
 	root.AddCommand(
 		newDaemonCmd(),
-		stub(&cobra.Command{
-			Use:   "helper",
-			Short: "Run the privileged helper (internal)",
-			Long: `Run the privileged helper. It binds ports 80/443, writes split-DNS config
-and manages the local CA in trust stores. It is started by the OS service
-manager and accepts commands only from the daemon; do not run it by hand.`,
-			Args:   cobra.NoArgs,
-			Hidden: true,
-		}),
+		newHelperCmd(),
 		newAddCmd(),
 		newRmCmd(),
 		newLsCmd(),
