@@ -9,6 +9,8 @@ Releases are cut by pushing a [semver](https://semver.org) tag. The
    amd64 and arm64 with `main.version` set to the tag, then writes
    `checksums.txt` (SHA-256).
 4. Publishes signed build provenance for every archive (GitHub artifact attestations).
+   This step is skipped while the repository is private, because GitHub does not offer
+   attestations for user-owned private repositories.
 5. Creates a GitHub release with generated notes. Tags with a pre-release part
    (`v0.2.0-rc.1`) are marked as pre-releases.
 
@@ -28,6 +30,8 @@ Verify a downloaded archive:
 shasum -a 256 -c checksums.txt --ignore-missing
 gh attestation verify sb_0.1.0_darwin_arm64.tar.gz --repo nanaaikinson/switchboard
 ```
+
+`gh attestation verify` works only for releases built while the repository was public.
 
 ## Versioning rules
 
