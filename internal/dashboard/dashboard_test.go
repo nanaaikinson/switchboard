@@ -159,8 +159,9 @@ func TestStaticFiles(t *testing.T) {
 		code              int
 	}{
 		{"/", "<div id=root>", "no-cache", 200},
-		{"/settings", "<div id=root>", "no-cache", 200}, // client-side route
-		{"/assets", "<div id=root>", "no-cache", 200},   // a directory: never listed
+		{"/settings", "<div id=root>", "no-cache", 200},              // client-side route
+		{"/routes/api.myapp.test", "<div id=root>", "no-cache", 200}, // a route name looks like a file
+		{"/assets", "<div id=root>", "no-cache", 200},                // a directory: never listed
 		{"/assets/app-abc.js", "console.log", "immutable", 200},
 		{"/assets/missing.js", "", "", 404},
 		{"/../../etc/passwd", "invalid URL path", "", 400}, // refused by ServeFileFS

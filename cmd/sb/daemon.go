@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,11 +20,13 @@ import (
 
 	"github.com/nanaaikinson/switchboard/internal/api"
 	"github.com/nanaaikinson/switchboard/internal/config"
+	"github.com/nanaaikinson/switchboard/internal/dashboard"
 	"github.com/nanaaikinson/switchboard/internal/dns"
 	"github.com/nanaaikinson/switchboard/internal/docker"
 	"github.com/nanaaikinson/switchboard/internal/pki"
 	"github.com/nanaaikinson/switchboard/internal/platform"
 	"github.com/nanaaikinson/switchboard/internal/proxy"
+	webui "github.com/nanaaikinson/switchboard/ui/dashboard"
 )
 
 type daemonOptions struct {
@@ -99,14 +102,28 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 	if err != nil {
 		return fmt.Errorf("load routes from %s: %w", cfgPath, err)
 	}
-	hosts := &hostsSyncer{Proxy: px, next: make(chan []config.Route, 1)}
+	dashHosts := make([]string, len(tlds))
+	for i, t := range tlds {
+		dashHosts[i] = dashboard.Host(t)
+	}
+	// The CA comes first: the API reports on it. Without one, HTTPS stays off.
+	issuer, ca, caErr := newIssuer(tlds, px)
+	hosts := &hostsSyncer{Proxy: px, next: make(chan []config.Route, 1), extra: dashHosts}
 	svc, err := api.NewService(api.Options{
 		ConfigPath: cfgPath, Config: cfg, Proxy: hosts, TLDs: tlds,
 		Version: version, HealthInterval: opts.healthInterval,
+		Reserved: dashHosts,
+		Logs:     px.Logs,
+		CA:       func() api.CAInfo { return caInfo(ca, issuer, caErr, dashHosts[0]) },
 	})
 	if err != nil {
 		return err
 	}
+	dash := dashboard.New(api.Handler(svc), webui.Assets())
+	// The control socket also mints dashboard logins; the dashboard itself can't.
+	control := http.NewServeMux()
+	control.Handle("/", api.Handler(svc))
+	control.Handle("POST /v1/dashboard/login", dash.LoginHandler())
 
 	// Claim the socket first so a second daemon exits before touching ports.
 	sock, err := api.DefaultSocketPath()
@@ -153,16 +170,16 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 	// HTTPS first, so plain HTTP knows whether and where to redirect.
 	httpsPort := 0
 	if secure.err == nil {
-		issuer, err := newIssuer(tlds, px)
-		if err != nil {
+		if caErr != nil {
 			closeListeners(secure.lns)
-			secure.err = err
+			secure.err = caErr
 		} else {
 			addrs := listenerAddrs(secure.lns)
 			httpsPort = secure.lns[0].Addr().(*net.TCPAddr).Port
 			svc.SetHTTPS(api.Listener{Addrs: addrs, Listening: true})
+			h := dash.Wrap(px, dashHosts, httpsPort)
 			wg.Go(func() {
-				if err := proxy.ServeTLS(ctx, px, secure.lns, issuer.TLSConfig()); err != nil {
+				if err := proxy.ServeTLS(ctx, h, secure.lns, issuer.TLSConfig()); err != nil {
 					slog.Error("https proxy stopped", "err", err)
 					svc.SetHTTPS(api.Listener{Addrs: addrs, Error: err.Error()})
 				}
@@ -182,6 +199,7 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 		if httpsPort != 0 {
 			h = proxy.RedirectHTTPS(px, httpsPort)
 		}
+		h = dash.Wrap(h, dashHosts, httpsPort) // plain HTTP to the dashboard goes to HTTPS
 		addrs := listenerAddrs(plain.lns)
 		svc.SetProxy(api.Listener{Addrs: addrs, Listening: true})
 		wg.Go(func() {
@@ -196,7 +214,7 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 	if opts.ready != nil {
 		opts.ready()
 	}
-	err = api.Serve(ctx, svc, ctl)
+	err = api.ServeHandler(ctx, control, ctl)
 	cancel()
 	wg.Wait()
 	slog.Info("daemon stopped")
@@ -242,14 +260,14 @@ func proxyListeners(ctx context.Context, opts daemonOptions) (plain, secure list
 // newIssuer loads or creates the local CA and serves names that only match
 // through a wildcard route with a wildcard certificate for their parent, so
 // one certificate covers all siblings.
-func newIssuer(tlds []string, px proxy.Proxy) (*pki.Issuer, error) {
+func newIssuer(tlds []string, px proxy.Proxy) (*pki.Issuer, *pki.CA, error) {
 	dir, err := pki.DefaultDir()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	ca, err := pki.LoadOrCreate(dir, tlds)
 	if err != nil {
-		return nil, fmt.Errorf("local CA: %w", err)
+		return nil, nil, fmt.Errorf("local CA: %w", err)
 	}
 	for _, tld := range tlds {
 		if !ca.Permits("x." + tld) {
@@ -263,7 +281,29 @@ func newIssuer(tlds []string, px proxy.Proxy) (*pki.Issuer, error) {
 			}
 		}
 		return host
-	}}), nil
+	}}), ca, nil
+}
+
+// caInfo reports the CA for GET /v1/ca. Trust is checked by verifying a
+// certificate for host against the system trust store, as a browser would.
+func caInfo(ca *pki.CA, issuer *pki.Issuer, caErr error, host string) api.CAInfo {
+	if caErr != nil {
+		return api.CAInfo{Error: caErr.Error()}
+	}
+	info := api.CAInfo{
+		Present: true, Fingerprint: ca.Fingerprint(), TLDs: ca.Cert.PermittedDNSDomains,
+		NotAfter: ca.Cert.NotAfter.UTC().Format(time.RFC3339),
+	}
+	leaf, err := issuer.Certificate(host)
+	if err == nil {
+		_, err = leaf.Leaf.Verify(x509.VerifyOptions{DNSName: host, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
+	}
+	if err != nil {
+		info.Error = err.Error()
+	} else {
+		info.Trusted = true
+	}
+	return info
 }
 
 func closeListeners(lns []net.Listener) {
@@ -285,7 +325,8 @@ func listenerAddrs(lns []net.Listener) []string {
 // The latest table wins, and syncing never blocks a route change.
 type hostsSyncer struct {
 	proxy.Proxy
-	next chan []config.Route // capacity 1
+	next  chan []config.Route // capacity 1
+	extra []string            // names the daemon serves itself, like the dashboard
 }
 
 // SetRoutes implements api.RouteSetter. Callers are serialized by the service.
@@ -309,7 +350,7 @@ func (h *hostsSyncer) run(ctx context.Context, p platform.Platform) {
 			return
 		case routes = <-h.next:
 		}
-		var names []string
+		names := slices.Clone(h.extra)
 		for _, r := range routes {
 			if !strings.HasPrefix(r.Name, "*.") { // wildcards cannot go in a hosts file
 				names = append(names, r.Name)

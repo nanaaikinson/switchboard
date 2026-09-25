@@ -71,6 +71,16 @@ func (c *Client) Apply(ctx context.Context, file string, routes []config.Route) 
 	return out, err
 }
 
+// DashboardLogin returns a one-time token for the dashboard's /login page.
+// Only the control socket hands these out.
+func (c *Client) DashboardLogin(ctx context.Context) (string, error) {
+	var out struct {
+		Token string `json:"token"`
+	}
+	_, err := c.do(ctx, http.MethodPost, "/v1/dashboard/login", struct{}{}, &out)
+	return out.Token, err
+}
+
 // Status returns daemon status.
 func (c *Client) Status(ctx context.Context) (api.Status, error) {
 	var out api.Status

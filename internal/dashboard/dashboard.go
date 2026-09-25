@@ -111,7 +111,7 @@ func (s *Server) Wrap(next http.Handler, hosts []string, httpsPort int) http.Han
 			if httpsPort != 443 {
 				host = net.JoinHostPort(host, strconv.Itoa(httpsPort))
 			}
-			http.Redirect(w, r, "https://"+host+"/", http.StatusTemporaryRedirect)
+			http.Redirect(w, r, "https://"+host+"/", http.StatusTemporaryRedirect) //nolint:gosec // G710: host is one of the dashboard's own names, matched above
 			return
 		}
 		s.ServeHTTP(w, r)
@@ -176,8 +176,9 @@ func sameOrigin(r *http.Request) bool {
 	return r.Header.Get("Origin") == "https://"+r.Host && r.Header.Get("X-Requested-With") == "switchboard"
 }
 
-// static serves the UI. Unknown paths without an extension get index.html,
-// so client-side routes such as /settings load the app.
+// static serves the UI. Unknown paths outside /assets get index.html, so
+// client-side routes such as /settings and /routes/myapp.test (which looks
+// like a file name) load the app.
 func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -188,8 +189,8 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 		name = "index.html"
 	}
 	switch fi, err := fs.Stat(s.assets, name); {
-	case errors.Is(err, fs.ErrNotExist) && path.Ext(name) != "":
-		http.NotFound(w, r)
+	case errors.Is(err, fs.ErrNotExist) && strings.HasPrefix(name, "assets/"):
+		http.NotFound(w, r) // a missing build file, not a page
 		return
 	case err != nil || fi.IsDir(): // never list directories
 		name = "index.html"

@@ -1,4 +1,4 @@
-.PHONY: all build test test-integration test-e2e-linux lint lint-sh vuln dist clean
+.PHONY: all build test test-integration test-e2e-linux test-ui ui lint lint-sh vuln dist clean
 
 BIN       := sb
 VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -17,6 +17,15 @@ test-integration:
 
 lint:
 	golangci-lint run
+
+# Rebuild the dashboard into ui/dashboard/dist, which sb embeds. Commit the
+# result; CI fails if it doesn't match the sources.
+ui:
+	cd ui/dashboard && npm ci && npm run build
+
+# Playwright smoke tests of the dashboard against a fake API.
+test-ui:
+	cd ui/dashboard && npm ci && npx playwright install chromium && npm test
 
 lint-sh:
 	shellcheck --shell=sh --severity=style install/install.sh install/packaging/*.sh test/e2e/linux/*.sh .github/scripts/*.sh test/release/*.sh

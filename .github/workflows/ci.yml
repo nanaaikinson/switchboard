@@ -52,6 +52,50 @@ jobs:
       - name: Test the release version script
         run: sh test/release/next-version-test.sh
 
+  dashboard:
+    name: dashboard
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui/dashboard
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: ui/dashboard/.nvmrc
+          cache: npm
+          cache-dependency-path: ui/dashboard/package-lock.json
+
+      - run: npm ci
+
+      - name: Type-check and build
+        run: npm run build
+
+      # sb embeds the committed dist/, so it must be what the sources build.
+      - name: Check the committed build is up to date
+        run: |
+          if ! git diff --exit-code --stat -- dist; then
+            echo "::error::ui/dashboard/dist is stale; run 'make ui' and commit the result"
+            exit 1
+          fi
+          if [ -n "$(git status --porcelain -- dist)" ]; then
+            git status --porcelain -- dist
+            echo "::error::ui/dashboard/dist has new files; run 'make ui' and commit the result"
+            exit 1
+          fi
+
+      - name: Playwright smoke tests
+        run: |
+          npx playwright install --with-deps chromium
+          npx playwright test
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: ui/dashboard/playwright-report
+
   goreleaser:
     name: goreleaser check
     runs-on: ubuntu-latest

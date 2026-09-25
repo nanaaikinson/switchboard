@@ -31,6 +31,9 @@ with `*.`.
 | `POST /v1/routes`          | `Route` | `201` if created, `200` if an existing name was updated; the stored `RouteStatus` | `400` for a bad JSON body, unknown field, bad name or bad port |
 | `DELETE /v1/routes/{name}` | none    | `200`, the removed `Route`                                                        | `404` if there is no such route; `409` if it comes from a Docker container |
 | `POST /v1/apply`           | `ApplyRequest` | `200`, `ApplyResult`                                                       | `400` for a relative `file`, a bad name or port, or a name listed twice |
+| `GET /v1/routes/{name}/logs` | none  | `200`, `[AccessLog]`: the route's last 100 requests, oldest first                | `404` if there is no such route                                |
+| `GET /v1/ca`               | none    | `200`, `CAInfo`                                                                   | none                                                           |
+| `POST /v1/dashboard/login` | none    | `200`, `{"token": "…"}`: a one-time dashboard sign-in token ([dashboard.md](dashboard.md)); socket only | none                  |
 | `GET /v1/status`           | none    | `200`, `Status`                                                                   | none                                                           |
 | `GET /v1/events`           | none    | `200`, `text/event-stream`                                                        | none                                                           |
 
@@ -56,6 +59,12 @@ the proxy is rolled back and the request returns `500`.
 {"name": "myapp.test", "port": 7000, "wildcard": false, "redirect_https": true, "health": "up", "source": "config"}
 {"name": "shop.test", "port": 3000, "wildcard": false, "redirect_https": true, "health": "up", "source": "file", "file": "/home/me/shop/switchboard.toml"}
 {"name": "web.test", "port": 8080, "wildcard": false, "redirect_https": true, "health": "up", "source": "docker", "container": "web"}
+
+// AccessLog: one proxied request; the query string is never stored
+{"time": "2026-09-25T10:00:00Z", "host": "a.myapp.test", "method": "GET", "path": "/", "status": 200, "duration_ms": 12.5}
+
+// CAInfo: the local CA, and whether the system trust store accepts it
+{"present": true, "fingerprint": "a1b2…", "not_after": "2036-09-22T00:00:00Z", "tlds": ["test"], "trusted": true}
 
 // ApplyRequest: the complete routes of one project file; [] removes them all
 {"file": "/home/me/shop/switchboard.toml", "routes": [{"name": "shop", "port": 3000, "redirect_https": true}]}

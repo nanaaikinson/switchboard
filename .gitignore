@@ -45,3 +45,8 @@ internal/file/testdata/
 # sb build output
 /sb
 /dist/
+
+# dashboard (dist/ is committed: it's embedded into sb)
+ui/dashboard/node_modules/
+ui/dashboard/test-results/
+ui/dashboard/playwright-report/
