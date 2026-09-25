@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -73,6 +74,61 @@ func resolverField(b []byte, key string) string {
 		}
 	}
 	return "?"
+}
+
+// CheckLocalDNS reads the resolver configuration from 'scutil --dns'. .local
+// lookups leak when a resolver for the "local" domain has unicast name
+// servers, as /etc/resolver/local or a VPN or MDM profile can set up.
+func (p *Platform) CheckLocalDNS(context.Context) error {
+	out, err := p.o.Run("scutil", "--dns")
+	if err != nil {
+		return fmt.Errorf("scutil --dns: %w: %s", err, bytes.TrimSpace(out))
+	}
+	if servers := localNameservers(out); len(servers) > 0 {
+		return withFix("Remove /etc/resolver/local if you made it, or ask whoever manages your VPN or device profile why it claims .local; until then prefer .test names.",
+			".local lookups go to unicast DNS server %s, which sees every .local name you look up and can answer with another host's address",
+			strings.Join(servers, ", "))
+	}
+	return nil
+}
+
+// localNameservers lists the unicast name servers of scutil resolvers for the
+// "local" domain.
+func localNameservers(scutil []byte) []string {
+	var out []string
+	var domain string
+	var servers []string
+	flush := func() {
+		if strings.TrimSuffix(strings.ToLower(domain), ".") == "local" {
+			for _, s := range servers {
+				if !slices.Contains(out, s) {
+					out = append(out, s)
+				}
+			}
+		}
+		domain, servers = "", nil
+	}
+	sc := bufio.NewScanner(bytes.NewReader(scutil))
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if strings.HasPrefix(line, "resolver #") {
+			flush()
+			continue
+		}
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		switch {
+		case k == "domain":
+			domain = v
+		case strings.HasPrefix(k, "nameserver["):
+			servers = append(servers, v)
+		}
+	}
+	flush()
+	return out
 }
 
 // LookupHost resolves host the way apps do, through the system resolver

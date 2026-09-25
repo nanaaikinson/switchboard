@@ -90,6 +90,35 @@ func (c *Client) SetPaused(ctx context.Context, paused bool) error {
 	return err
 }
 
+// TLDs lists the served TLDs, default first.
+func (c *Client) TLDs(ctx context.Context) ([]api.TLD, error) {
+	var out []api.TLD
+	_, err := c.do(ctx, http.MethodGet, "/v1/tlds", nil, &out)
+	return out, err
+}
+
+// AddTLD adds an opt-in TLD; only .local with mdns is supported. It reports
+// whether the TLD is new.
+func (c *Client) AddTLD(ctx context.Context, name string, mdns bool) (bool, error) {
+	var out []api.TLD
+	code, err := c.do(ctx, http.MethodPut, "/v1/tlds/"+url.PathEscape(name), map[string]bool{"mdns": mdns}, &out)
+	return code == http.StatusCreated, err
+}
+
+// RemoveTLD removes an opt-in TLD.
+func (c *Client) RemoveTLD(ctx context.Context, name string) error {
+	var out []api.TLD
+	_, err := c.do(ctx, http.MethodDelete, "/v1/tlds/"+url.PathEscape(name), nil, &out)
+	return err
+}
+
+// CA reports the local CA and whether the system trusts it.
+func (c *Client) CA(ctx context.Context) (api.CAInfo, error) {
+	var out api.CAInfo
+	_, err := c.do(ctx, http.MethodGet, "/v1/ca", nil, &out)
+	return out, err
+}
+
 // Status returns daemon status.
 func (c *Client) Status(ctx context.Context) (api.Status, error) {
 	var out api.Status

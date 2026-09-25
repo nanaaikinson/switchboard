@@ -44,6 +44,7 @@ func (unsupported) RestartDaemon() (bool, error)              { return false, ni
 func (unsupported) HelperRunning(context.Context) error       { return errUnsupported }
 func (unsupported) SyncHosts(context.Context, []string) error { return errUnsupported }
 func (unsupported) CheckResolver(string, int) error           { return errUnsupported }
+func (unsupported) CheckLocalDNS(context.Context) error       { return errUnsupported }
 func (unsupported) LookupHost(context.Context, string) ([]string, error) {
 	return nil, errUnsupported
 }

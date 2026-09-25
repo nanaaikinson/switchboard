@@ -23,6 +23,10 @@ reserved: `sb add`, `sb apply` and Docker can't take it. What it shows:
   **HTTPS** ("Serve this over TLS"; per route, on by default) decides whether
   `http://` requests are redirected to `https://`. Turned off, the route answers plain
   `http://` as well; `https://` keeps working either way.
+- **.local mode (experimental):** with `sb tld add local --mdns` on, a banner says the
+  mode is experimental and how many names are announced over mDNS, or why none are.
+  Each `.local` route gets an **mDNS** badge (*mDNS*, *mDNS pending*, or *not on mDNS*
+  for wildcards, which can't be announced). See [mdns.md](mdns.md).
 - **Editing:** toggle HTTPS, delete routes, and add routes with validation.
   Routes from project files and containers are read-only here, because the file or the
   container's labels own them. A tooltip says where to change them.

@@ -27,7 +27,10 @@ type fakeDiag struct {
 	addrs                  []string
 	lookupErr              error
 	owners                 map[int]string
+	localDNSErr            error
 }
+
+func (f fakeDiag) CheckLocalDNS(context.Context) error { return f.localDNSErr }
 
 func (f fakeDiag) HelperRunning(context.Context) error { return f.helperErr }
 func (f fakeDiag) CheckResolver(string, int) error     { return f.resolverErr }

@@ -75,7 +75,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
       const ev = JSON.parse(msg.data) as RouteEvent;
       setRoutes((rs) => rs?.map((r) => (r.name === ev.route.name ? { ...r, health: ev.route.health } : r)) ?? rs);
     };
-    for (const t of ["route.added", "route.updated", "route.removed"]) es.addEventListener(t, onRouteChange);
+    for (const t of ["route.added", "route.updated", "route.removed", "tlds.changed", "mdns.changed"]) es.addEventListener(t, onRouteChange);
     es.addEventListener("health.changed", onHealth);
     return () => {
       es.close();

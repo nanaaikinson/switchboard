@@ -25,6 +25,34 @@ type RouteStatus struct {
 	Health    Health `json:"health"`
 	Source    string `json:"source"`              // SourceConfig, SourceFile or SourceDocker
 	Container string `json:"container,omitempty"` // for SourceDocker
+	// MDNS is set for routes under an mDNS TLD: one of the MDNS* values.
+	MDNS string `json:"mdns,omitempty"`
+}
+
+// mDNS states of a route under an mDNS TLD. Only exact names can be
+// announced; a route's --wildcard subdomains are not.
+const (
+	MDNSAnnounced = "announced"
+	MDNSPending   = "pending"  // not announced yet, or failing; see Status.MDNS.Error
+	MDNSWildcard  = "wildcard" // *.name patterns can't be announced over mDNS
+)
+
+// MDNSStatus reports the experimental .local mode.
+type MDNSStatus struct {
+	Enabled      bool     `json:"enabled"`             // an mDNS TLD is configured
+	Experimental bool     `json:"experimental"`        // always true for now
+	TLDs         []string `json:"tlds"`                // TLDs resolved over mDNS, e.g. ["local"]
+	Backend      string   `json:"backend,omitempty"`   // the responder in use, e.g. "go"
+	Interface    string   `json:"interface,omitempty"` // where names are announced, e.g. "loopback"
+	Announced    int      `json:"announced"`           // number of names announced
+	Error        string   `json:"error,omitempty"`     // why names aren't announced; retried
+}
+
+// TLD is one entry of GET /v1/tlds.
+type TLD struct {
+	Name    string `json:"name"`
+	Default bool   `json:"default,omitempty"` // appended to names without a TLD
+	MDNS    bool   `json:"mdns,omitempty"`    // resolved over mDNS (experimental), not split DNS
 }
 
 // DockerRoute is a route for a running container.
@@ -59,7 +87,8 @@ type Listener struct {
 type Status struct {
 	Version       string        `json:"version"`
 	UptimeSeconds int64         `json:"uptime_seconds"`
-	TLDs          []string      `json:"tlds"`
+	TLDs          []string      `json:"tlds"` // every served TLD, default first
+	MDNS          MDNSStatus    `json:"mdns"`
 	DNS           Listener      `json:"dns"`
 	Proxy         Listener      `json:"proxy"` // plain HTTP
 	HTTPS         Listener      `json:"https"`
@@ -75,6 +104,8 @@ const (
 	EventRouteRemoved  = "route.removed"
 	EventHealthChanged = "health.changed"
 	EventPausedChanged = "paused.changed" // Route is empty; Paused is set
+	EventTLDsChanged   = "tlds.changed"   // Route is empty; see GET /v1/tlds
+	EventMDNSChanged   = "mdns.changed"   // Route is empty; see GET /v1/status
 )
 
 // Event is one server-sent event.

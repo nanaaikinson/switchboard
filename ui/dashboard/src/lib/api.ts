@@ -13,10 +13,25 @@ export interface Route {
   file?: string;
 }
 
+/** A .local route's announcement over mDNS (experimental); absent for other routes. */
+export type MDNSState = "announced" | "pending" | "wildcard";
+
 export interface RouteStatus extends Route {
   health: Health;
   source: Source;
   container?: string;
+  mdns?: MDNSState;
+}
+
+/** The experimental .local mode, turned on with sb tld add local --mdns. */
+export interface MDNSStatus {
+  enabled: boolean;
+  experimental: boolean;
+  tlds: string[];
+  backend?: string;
+  interface?: string;
+  announced: number;
+  error?: string;
 }
 
 export interface Listener {
@@ -41,6 +56,8 @@ export interface Status {
   proxy: Listener;
   https: Listener;
   docker: DockerStatus;
+  /** Missing from daemons older than the .local mode. */
+  mdns?: MDNSStatus;
   routes: RouteStatus[];
 }
 
@@ -156,6 +173,12 @@ const hostname = new RegExp(String.raw`^(\*\.)?${label}(\.${label})*$`);
 /** Mirrors config.ValidHostname: LDH labels, optionally prefixed by "*.". */
 export function validName(name: string): boolean {
   return name.length > 0 && name.length <= 253 && hostname.test(name);
+}
+
+/** name with the default TLD appended, unless it already ends in a served TLD. */
+export function qualifyName(name: string, tlds: string[]): string {
+  if (!name || tlds.some((t) => name.endsWith("." + t))) return name;
+  return `${name}.${tlds[0] ?? "test"}`;
 }
 
 export function validPort(port: string): boolean {

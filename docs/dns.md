@@ -1,6 +1,8 @@
 # DNS server
 
-`internal/dns` is the resolver the OS uses, through split DNS, for Switchboard TLDs.
+`internal/dns` is the resolver the OS uses, through split DNS, for Switchboard TLDs. It
+never serves `.local`, which the experimental .local mode announces over multicast DNS
+instead ([mdns.md](mdns.md)).
 
 ## Behaviour
 

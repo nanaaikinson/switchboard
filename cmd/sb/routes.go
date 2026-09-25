@@ -95,7 +95,11 @@ func newLsCmd() *cobra.Command {
 		Long: `List routes with the health of their upstream port (up, down, or unknown
 before the first check) and where they come from: 'sb add', a project's
 switchboard.toml ('sb apply'), or a running Docker container. Lists containers that publish ports but got no route, and
-why. Warns when the DNS server, HTTP proxy or HTTPS proxy is not listening.`,
+why. Warns when the DNS server, HTTP proxy or HTTPS proxy is not listening.
+
+With the experimental .local mode on ('sb tld add local --mdns'), an MDNS
+column shows whether each .local name is announced. Wildcard routes can't be
+announced over mDNS.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, err := newClient()
@@ -123,16 +127,33 @@ why. Warns when the DNS server, HTTP proxy or HTTPS proxy is not listening.`,
 			if st.Paused {
 				fmt.Fprintln(cmd.ErrOrStderr(), "warning: Switchboard is paused; every route answers 503. Resume with: sb resume")
 			}
+			if st.MDNS.Enabled && st.MDNS.Error != "" {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: .local names are not announced over mDNS: %s. Run 'sb doctor'.\n", st.MDNS.Error)
+			}
 			if len(st.Routes) == 0 {
 				fmt.Fprintln(out, "No routes. Add one with: sb add myapp 3000")
 			} else {
 				tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-				fmt.Fprintln(tw, "NAME\tPORT\tUPSTREAM\tSOURCE")
+				header := "NAME\tPORT\tUPSTREAM\tSOURCE"
+				if st.MDNS.Enabled {
+					header += "\tMDNS (EXPERIMENTAL)"
+				}
+				fmt.Fprintln(tw, header)
+				wildcards := false
 				for _, r := range st.Routes {
-					fmt.Fprintf(tw, "%s\t%d\t%s\t%s\n", displayName(r.Route), r.Port, r.Health, source(r))
+					row := fmt.Sprintf("%s\t%d\t%s\t%s", displayName(r.Route), r.Port, r.Health, source(r))
+					if st.MDNS.Enabled {
+						m := mdnsColumn(r)
+						wildcards = wildcards || r.MDNS == api.MDNSWildcard || (r.MDNS != "" && r.Wildcard)
+						row += "\t" + m
+					}
+					fmt.Fprintln(tw, row)
 				}
 				if err := tw.Flush(); err != nil {
 					return err
+				}
+				if wildcards {
+					fmt.Fprintln(out, "\nWildcards can't be announced over mDNS. Add each .local name you need, e.g. sb add demo.myapp.local <port>")
 				}
 			}
 			if len(st.Docker.Skipped) > 0 {
@@ -192,6 +213,19 @@ func source(r api.RouteStatus) string {
 		return "file (" + shortPath(r.File) + ")"
 	}
 	return api.SourceConfig
+}
+
+// mdnsColumn describes a route's mDNS announcement for sb ls.
+func mdnsColumn(r api.RouteStatus) string {
+	switch {
+	case r.MDNS == "":
+		return "-"
+	case r.MDNS == api.MDNSWildcard:
+		return "not announced (wildcard)"
+	case r.Wildcard:
+		return r.MDNS + " (subdomains not)"
+	}
+	return r.MDNS
 }
 
 // displayName shows wildcard coverage: "myapp.test (+ *.myapp.test)".

@@ -158,3 +158,64 @@ func TestPortOwner(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckLocalDNS(t *testing.T) {
+	const mdnsOnly = `DNS configuration
+
+resolver #1
+  nameserver[0] : 192.168.8.1
+  if_index : 15 (en0)
+
+resolver #2
+  domain   : local
+  options  : mdns
+  timeout  : 5
+  order    : 300000
+
+resolver #8
+  domain   : test
+  nameserver[0] : 127.0.0.1
+  port     : 15353
+`
+	const leaking = mdnsOnly + `
+DNS configuration (for scoped queries)
+
+resolver #9
+  domain   : local.
+  nameserver[0] : 10.0.0.53
+  nameserver[1] : 10.0.0.54
+`
+	tests := []struct {
+		name    string
+		out     string
+		runErr  error
+		wantErr string
+	}{
+		{name: "mdns only", out: mdnsOnly},
+		{name: "unicast resolver for local", out: leaking, wantErr: "unicast DNS server 10.0.0.53, 10.0.0.54"},
+		{name: "scutil fails", out: "boom", runErr: errors.New("exit status 1"), wantErr: "scutil --dns"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := New(Options{Run: func(name string, args ...string) ([]byte, error) {
+				if name != "scutil" || strings.Join(args, " ") != "--dns" {
+					t.Errorf("ran %s %v", name, args)
+				}
+				return []byte(tt.out), tt.runErr
+			}})
+			err := p.CheckLocalDNS(context.Background())
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("CheckLocalDNS: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+			}
+			if tt.runErr == nil && !strings.Contains(fixOf(err), "/etc/resolver/local") {
+				t.Errorf("fix = %q", fixOf(err))
+			}
+		})
+	}
+}

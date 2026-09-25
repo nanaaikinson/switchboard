@@ -19,6 +19,10 @@ atomic: a temp file is written in the same directory and renamed over the old fi
 ```toml
 schema_version = 1
 
+[[tlds]]               # optional; written by 'sb tld add local --mdns'
+name = "local"
+mdns = true
+
 [[routes]]
 name = "myapp.test"
 port = 7000
@@ -35,6 +39,7 @@ redirect_https = true
 | Key              | Type | Required | Meaning                                    |
 | ---------------- | ---- | -------- | ------------------------------------------ |
 | `schema_version` | int  | yes      | Config schema version. Currently `1`.      |
+| `tlds`           | list | no       | TLDs served besides the default `.test`. Only `{name = "local", mdns = true}` is allowed: the experimental .local mode ([mdns.md](mdns.md)). Configs without it are unchanged. |
 | `name`           | str  | yes      | Hostname. Unique, case-insensitive.        |
 | `port`           | int  | yes      | Local upstream port, 1–65535.              |
 | `wildcard`       | bool | no       | Also match subdomains of `name`.           |

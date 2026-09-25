@@ -160,7 +160,8 @@ fn build_menu(app: &AppHandle, st: Option<&Status>) -> tauri::Result<Menu<Wry>> 
                     ("file", _) => "  (project file)".into(),
                     _ => String::new(),
                 };
-                let label = format!("{} {}  :{}{from}", health_dot(&r.health), r.name, r.port);
+                let note = r.mdns_note();
+                let label = format!("{} {}  :{}{from}{note}", health_dot(&r.health), r.name, r.port);
                 let clickable = st.route_url(&r.name).is_some();
                 menu.append(&item(&format!("route:{}", r.name), &label, clickable)?)?;
             }

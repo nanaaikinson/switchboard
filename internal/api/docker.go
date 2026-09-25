@@ -37,6 +37,7 @@ func (s *Service) SetDocker(st DockerStatus, routes []DockerRoute) {
 	s.docker, s.active, s.conflicts, s.dockerStatus = routes, active, conflicts, st
 	s.health.track(ports(all))
 	s.publishDockerDiff(old, active)
+	s.announce()
 }
 
 // merge returns the config routes plus the Docker routes that don't claim a

@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -15,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	dnswire "github.com/miekg/dns"
 	"github.com/spf13/cobra"
 
 	"github.com/nanaaikinson/switchboard/internal/api"
@@ -70,6 +73,8 @@ with a one-line fix for each failure:
   - probe.<tld> resolves to 127.0.0.1 through the system resolver
   - the local CA exists, covers every TLD and is not about to expire
   - https://probe.<tld> presents a certificate the system trusts
+  - with the experimental .local mode on: routes under .local are announced
+    over mDNS and resolve, and .local lookups don't leak to unicast DNS
   - ports 80 and 443 are served by Switchboard or free, else who holds them
   - each route's upstream port accepts connections
 
@@ -115,16 +120,24 @@ func runDoctor(ctx context.Context, p platform.Platform) []checkResult {
 
 	rs = append(rs, fromErr("helper", "running", p.HelperRunning(ctx), "Run 'sb setup'."))
 
-	tlds, dnsPort := dns.DefaultTLDs(), defaultDNSPort()
+	tlds, mdnsTLDs, dnsPort := dns.DefaultTLDs(), configMDNSTLDs(), defaultDNSPort()
 	if up {
-		tlds = st.TLDs
+		tlds, mdnsTLDs = st.TLDs, st.MDNS.TLDs
 		if len(st.DNS.Addrs) > 0 {
 			if port, ok := portOf(st.DNS.Addrs[0]); ok {
 				dnsPort = port
 			}
 		}
+	} else {
+		tlds = append(tlds, mdnsTLDs...)
 	}
-	for _, tld := range tlds {
+	var unicast []string // resolved through split DNS
+	for _, t := range tlds {
+		if !slices.Contains(mdnsTLDs, t) {
+			unicast = append(unicast, t)
+		}
+	}
+	for _, tld := range unicast {
 		resolver := fromErr("resolver ."+tld, fmt.Sprintf("split DNS for .%s is in place", tld),
 			p.CheckResolver(tld, dnsPort), "Run 'sb setup'.")
 		rs = append(rs, resolver)
@@ -144,8 +157,11 @@ func runDoctor(ctx context.Context, p platform.Platform) []checkResult {
 	}
 
 	rs = append(rs, checkCA(tlds))
-	for _, tld := range tlds {
+	for _, tld := range unicast {
 		rs = append(rs, checkHTTPS(ctx, st, up, "probe."+tld))
+	}
+	if len(mdnsTLDs) > 0 {
+		rs = append(rs, checkMDNS(ctx, p, st, up)...)
 	}
 
 	for _, port := range doctorPorts {
@@ -205,7 +221,7 @@ func checkCA(tlds []string) checkResult {
 	if err == nil {
 		ca, err = pki.Load(dir)
 	}
-	rotate := "Run 'sb untrust', move " + filepath.Join(dir, "ca") + " aside, then run 'sb trust' to make a new CA."
+	rotate := rotateCAHint()
 	switch {
 	case errors.Is(err, pki.ErrNoCA):
 		return checkResult{checkFail, name, "not created yet", "Run 'sb trust' (or 'sb setup')."}
@@ -222,6 +238,126 @@ func checkCA(tlds []string) checkResult {
 		return checkResult{checkFail, name, "expires on " + expires, rotate}
 	}
 	return pass(name, "valid until "+expires+", limited to ."+strings.Join(ca.Cert.PermittedDNSDomains, ", ."))
+}
+
+// configMDNSTLDs lists the mDNS TLDs in routes.toml, for when the daemon is
+// down.
+func configMDNSTLDs() []string {
+	var out []string
+	if path, err := config.DefaultPath(); err == nil {
+		if cfg, err := config.Load(path); err == nil {
+			for _, t := range cfg.TLDs {
+				if t.MDNS {
+					out = append(out, t.Name)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// checkMDNS checks the experimental .local mode: that the daemon announces
+// names, that an announced name resolves, and that .local lookups stay on
+// mDNS.
+func checkMDNS(ctx context.Context, p platform.Platform, st api.Status, up bool) []checkResult {
+	const name = "mdns (experimental)"
+	var rs []checkResult
+	switch {
+	case !up:
+		rs = append(rs, checkResult{status: checkSkip, name: name, detail: "daemon not running"})
+	case st.MDNS.Error != "":
+		rs = append(rs, checkResult{checkFail, name, ".local names are not announced: " + st.MDNS.Error,
+			"Start the system's mDNS responder (macOS: mDNSResponder; Linux: 'sudo systemctl enable --now avahi-daemon'); the daemon retries every 10 seconds."})
+	case st.MDNS.Backend == "":
+		rs = append(rs, checkResult{status: checkSkip, name: name, detail: "starting; re-run 'sb doctor' in a moment"})
+	default:
+		rs = append(rs, pass(name, fmt.Sprintf("announcing %d .local names via %s on %s", st.MDNS.Announced, st.MDNS.Backend, st.MDNS.Interface)))
+		for _, r := range st.Routes {
+			if r.MDNS == api.MDNSAnnounced {
+				rs = append(rs, checkLookup(ctx, p, r.Name,
+					"The name is announced but the system resolver doesn't find it over mDNS; restart the mDNS responder, then re-run 'sb doctor'."))
+				break
+			}
+		}
+	}
+	return append(rs, checkLocalLeak(ctx, p))
+}
+
+// unicastServers lists the unicast DNS servers (host:port) that programs
+// bypassing the system resolver use; swapped in tests.
+var unicastServers = func() ([]string, error) {
+	cfg, err := dnswire.ClientConfigFromFile("/etc/resolv.conf")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(cfg.Servers))
+	for i, s := range cfg.Servers {
+		out[i] = net.JoinHostPort(s, cfg.Port)
+	}
+	return out, nil
+}
+
+// checkLocalLeak reports whether .local lookups can reach unicast DNS: from
+// the system resolver's configuration, and by asking the unicast servers
+// directly for a random .local name, as Go or musl programs and dig do.
+func checkLocalLeak(ctx context.Context, p platform.Platform) checkResult {
+	const name = ".local lookups"
+	err := p.CheckLocalDNS(ctx)
+	if err != nil && !errors.Is(err, errors.ErrUnsupported) {
+		return fromErr(name, "", err, "Keep .local lookups on mDNS, or use .test names instead.")
+	}
+	server, probe, addrs := unicastAnswersLocal(ctx)
+	if server != "" {
+		return checkResult{checkFail, name,
+			fmt.Sprintf("DNS server %s answers .local names (%s -> %s): programs that skip mDNS get another host's address, and the server sees the .local names you look up", server, probe, strings.Join(addrs, ", ")),
+			"Use .test names for anything that must not leave this machine, or ask your network admin to stop answering .local (it is reserved for mDNS, RFC 6762)."}
+	}
+	if err != nil {
+		return fromErr(name, "", err, "")
+	}
+	return pass(name, "stay on mDNS; unicast DNS doesn't answer them")
+}
+
+// unicastAnswersLocal asks each unicast DNS server for a random .local
+// name. It returns the first server that answers, the name and the answer.
+func unicastAnswersLocal(ctx context.Context) (server, probe string, addrs []string) {
+	servers, err := unicastServers()
+	if err != nil {
+		return "", "", nil // no resolv.conf (Windows): nothing to ask
+	}
+	b := make([]byte, 6)
+	_, _ = rand.Read(b)
+	probe = "sb-leak-" + hex.EncodeToString(b) + ".local"
+	m := new(dnswire.Msg)
+	m.SetQuestion(probe+".", dnswire.TypeA)
+	c := dnswire.Client{Timeout: doctorDialTimeout}
+	for _, s := range servers {
+		in, _, err := c.ExchangeContext(ctx, m, s)
+		if err != nil || in.Rcode != dnswire.RcodeSuccess {
+			continue
+		}
+		for _, rr := range in.Answer {
+			switch a := rr.(type) {
+			case *dnswire.A:
+				addrs = append(addrs, a.A.String())
+			case *dnswire.CNAME:
+				addrs = append(addrs, a.Target)
+			}
+		}
+		if len(addrs) > 0 {
+			return s, probe, addrs
+		}
+	}
+	return "", "", nil
+}
+
+// rotateCAHint says how to replace the local CA, e.g. to cover a new TLD.
+func rotateCAHint() string {
+	dir, err := pki.DefaultDir()
+	if err != nil {
+		dir = "<config dir>/pki"
+	}
+	return "Run 'sb untrust', move " + filepath.Join(dir, "ca") + " aside, run 'sb trust' to make a new CA, then re-run 'sb setup' to restart the daemon with it."
 }
 
 // checkHTTPS does a TLS handshake with the HTTPS proxy for host, verified

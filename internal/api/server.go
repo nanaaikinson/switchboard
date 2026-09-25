@@ -88,6 +88,37 @@ func Handler(s *Service) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, req)
 	})
+	mux.HandleFunc("GET /v1/tlds", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, s.TLDs())
+	})
+	mux.HandleFunc("PUT /v1/tlds/{name}", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			MDNS bool `json:"mdns"`
+		}
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("decode tld request: %w", err))
+			return
+		}
+		created, err := s.AddTLD(r.PathValue("name"), req.MDNS)
+		if err != nil {
+			writeError(w, statusFor(err), err)
+			return
+		}
+		code := http.StatusOK
+		if created {
+			code = http.StatusCreated
+		}
+		writeJSON(w, code, s.TLDs())
+	})
+	mux.HandleFunc("DELETE /v1/tlds/{name}", func(w http.ResponseWriter, r *http.Request) {
+		if err := s.RemoveTLD(r.PathValue("name")); err != nil {
+			writeError(w, statusFor(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.TLDs())
+	})
 	mux.HandleFunc("GET /v1/ca", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, s.CA())
 	})

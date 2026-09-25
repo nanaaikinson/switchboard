@@ -29,7 +29,8 @@ ui/dashboard/ (embedded) app/tray/ (Tauri) install/ docs/
 ## Conventions
 
 - Go (latest stable), standard library first. Allowed deps: cobra, miekg/dns,
-  smallstep/truststore, Docker SDK, BurntSushi/toml. Ask before adding others.
+  smallstep/truststore, Docker SDK, BurntSushi/toml, hashicorp/mdns (.local mode only).
+  Ask before adding others.
 - OS-specific code only in internal/platform/<os>, behind interfaces; use build tags.
 - Errors: wrap with context (fmt.Errorf("...: %w", err)); user-facing messages say what
   to do next.

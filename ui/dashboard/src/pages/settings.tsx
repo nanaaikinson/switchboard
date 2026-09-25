@@ -20,16 +20,23 @@ export function SettingsPage() {
         <CardContent className="space-y-3 text-sm">
           <Row label="TLDs">
             <span className="flex flex-wrap gap-1" data-testid="tlds">
-              {status?.tlds.map((t) => (
-                <Badge key={t} variant="secondary">
-                  .{t}
-                </Badge>
-              ))}
+              {status?.tlds.map((t) =>
+                status.mdns?.tlds.includes(t) ? (
+                  <Badge key={t} variant="outline" title="Resolved over multicast DNS; wildcards can't be announced">
+                    .{t} · mDNS, experimental
+                  </Badge>
+                ) : (
+                  <Badge key={t} variant="secondary">
+                    .{t}
+                  </Badge>
+                ),
+              )}
             </span>
           </Row>
           <p className="text-muted-foreground">
             Names that don't end in one of these get .{status?.tlds[0] ?? "test"} added. You can't change TLDs from the
-            dashboard yet.
+            dashboard yet; turn on the experimental .local mode with{" "}
+            <code className="font-mono">sb tld add local --mdns</code>.
           </p>
         </CardContent>
       </Card>
