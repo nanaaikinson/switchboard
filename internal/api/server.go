@@ -78,6 +78,17 @@ func Handler(s *Service) http.Handler {
 		}
 		writeJSON(w, http.StatusOK, res)
 	})
+	mux.HandleFunc("GET /v1/routes/{name}/logs", func(w http.ResponseWriter, r *http.Request) {
+		logs, err := s.Logs(r.PathValue("name"))
+		if err != nil {
+			writeError(w, statusFor(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, logs)
+	})
+	mux.HandleFunc("GET /v1/ca", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, s.CA())
+	})
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, s.Status())
 	})
@@ -179,8 +190,14 @@ func ListenUnix(path string) (net.Listener, error) {
 
 // Serve serves the control API on ln until ctx is done.
 func Serve(ctx context.Context, s *Service, ln net.Listener) error {
+	return ServeHandler(ctx, Handler(s), ln)
+}
+
+// ServeHandler is Serve with a handler built around Handler, such as one
+// that adds socket-only endpoints.
+func ServeHandler(ctx context.Context, h http.Handler, ln net.Listener) error {
 	srv := &http.Server{
-		Handler:           Handler(s),
+		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,
 		ErrorLog:          slog.NewLogLogger(slog.Default().Handler(), slog.LevelDebug),
 		BaseContext:       func(net.Listener) context.Context { return ctx },

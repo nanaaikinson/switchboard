@@ -314,7 +314,7 @@ func TestWebSocketEcho(t *testing.T) {
 		}
 	}))
 	t.Cleanup(up.Close)
-	_, fr := front(t, config.Route{Name: "myapp.test", Port: portOf(t, up.Listener.Addr())})
+	px, fr := front(t, config.Route{Name: "myapp.test", Port: portOf(t, up.Listener.Addr())})
 
 	conn, err := net.Dial("tcp", fr.Listener.Addr().String())
 	if err != nil {
@@ -347,6 +347,14 @@ func TestWebSocketEcho(t *testing.T) {
 		if got != msg {
 			t.Errorf("echo = %q, want %q", got, msg)
 		}
+	}
+	conn.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for len(px.Logs("myapp.test")) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond) // logged when the tunnel closes
+	}
+	if logs := px.Logs("myapp.test"); len(logs) != 1 || logs[0].Status != http.StatusSwitchingProtocols {
+		t.Errorf("WebSocket logs = %+v, want one 101", logs)
 	}
 }
 

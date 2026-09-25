@@ -20,7 +20,7 @@ var ErrConflict = errors.New("conflict")
 func (s *Service) SetDocker(st DockerStatus, routes []DockerRoute) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	all, active, conflicts := merge(s.routes, routes)
+	all, active, conflicts := s.merge(s.routes, routes)
 	if err := s.opts.Proxy.SetRoutes(all); err != nil {
 		// Never let container routes break the config routes.
 		slog.Warn("docker routes rejected", "err", err)
@@ -40,9 +40,13 @@ func (s *Service) SetDocker(st DockerStatus, routes []DockerRoute) {
 }
 
 // merge returns the config routes plus the Docker routes that don't claim a
-// name or wildcard a config route (or an earlier Docker route) already has.
-func merge(cfg []config.Route, docker []DockerRoute) (all []config.Route, active []DockerRoute, conflicts []DockerSkip) {
+// reserved name, or a name or wildcard a config route (or an earlier Docker
+// route) already has.
+func (s *Service) merge(cfg []config.Route, docker []DockerRoute) (all []config.Route, active []DockerRoute, conflicts []DockerSkip) {
 	used := map[string]string{}
+	for _, n := range s.opts.Reserved {
+		used[n] = "the Switchboard dashboard"
+	}
 	for _, r := range cfg {
 		for _, c := range claims(r) {
 			used[c] = "a route in routes.toml"

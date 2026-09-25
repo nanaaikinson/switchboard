@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/nanaaikinson/switchboard/internal/config"
 )
@@ -29,12 +30,16 @@ type Proxy interface {
 	// Lookup returns the route serving host, and whether it matched through
 	// a wildcard rather than by exact name.
 	Lookup(host string) (route config.Route, wildcard, ok bool)
+	// Logs returns the recent requests to the route called name, oldest
+	// first.
+	Logs(name string) []AccessLog
 }
 
 // ReverseProxy is the standard-library Proxy built on httputil.ReverseProxy.
 type ReverseProxy struct {
 	table     atomic.Pointer[table]
 	transport http.RoundTripper
+	logs      accessLogs
 }
 
 var _ Proxy = (*ReverseProxy)(nil)
@@ -94,8 +99,16 @@ func (p *ReverseProxy) SetRoutes(routes []config.Route) error {
 		t.suffixes[base[strings.LastIndexByte(base, '.')+1:]] = true
 	}
 	p.table.Store(t)
+	names := make(map[string]bool, len(routes))
+	for _, r := range routes {
+		names[r.Name] = true
+	}
+	p.logs.keep(names)
 	return nil
 }
+
+// Logs implements Proxy.
+func (p *ReverseProxy) Logs(name string) []AccessLog { return p.logs.get(name) }
 
 // Routes implements Proxy.
 func (p *ReverseProxy) Routes() []config.Route {
@@ -120,7 +133,16 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	t := p.table.Load()
 	host := normalizeHost(r.Host)
 	if b := t.lookup(host); b != nil {
-		b.rp.ServeHTTP(w, r)
+		rec := &statusRecorder{ResponseWriter: w}
+		start := time.Now()
+		b.rp.ServeHTTP(rec, r)
+		if rec.status == 0 && r.Header.Get("Upgrade") != "" {
+			rec.status = http.StatusSwitchingProtocols // hijacked, so never seen here
+		}
+		p.logs.add(b.route.Name, AccessLog{
+			Time: start, Host: host, Method: r.Method, Path: r.URL.Path, Status: rec.status,
+			DurationMs: float64(time.Since(start).Microseconds()) / 1000,
+		})
 		return
 	}
 	notFound(w, host, t)

@@ -38,6 +38,9 @@ func (s *Service) Apply(req ApplyRequest) (ApplyResult, error) {
 	var res ApplyResult
 	var next, mine []config.Route
 	owners := map[string]string{} // claim -> who has it
+	for _, n := range s.opts.Reserved {
+		owners[n] = "the Switchboard dashboard"
+	}
 	for _, r := range s.routes {
 		if r.File == req.File {
 			mine = append(mine, r)

@@ -86,6 +86,16 @@ type Error struct {
 	Error string `json:"error"`
 }
 
+// CAInfo is the body of GET /v1/ca.
+type CAInfo struct {
+	Present     bool     `json:"present"`
+	Fingerprint string   `json:"fingerprint,omitempty"` // SHA-256, hex
+	NotAfter    string   `json:"not_after,omitempty"`   // RFC 3339
+	TLDs        []string `json:"tlds,omitempty"`        // what its name constraints allow
+	Trusted     bool     `json:"trusted"`               // by the system trust store
+	Error       string   `json:"error,omitempty"`       // why it isn't present or trusted
+}
+
 // ApplyRequest is the body of POST /v1/apply: the complete set of routes from
 // one project file. An empty Routes removes all of that file's routes.
 type ApplyRequest struct {

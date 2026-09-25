@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nanaaikinson/switchboard/internal/config"
+	"github.com/nanaaikinson/switchboard/internal/proxy"
 )
 
 // ErrNotFound is returned when a route does not exist.
@@ -31,6 +32,13 @@ type Options struct {
 	TLDs           []string // first entry is appended to unqualified names
 	Version        string
 	HealthInterval time.Duration // 0 means DefaultHealthInterval
+	// Reserved names can't be routes, e.g. the dashboard's switchboard.<tld>.
+	Reserved []string
+	// Logs returns a route's recent requests; nil means none are kept.
+	Logs func(name string) []proxy.AccessLog
+	// CA reports the local CA and whether the system trusts it; nil reports
+	// no CA.
+	CA func() CAInfo
 }
 
 // Service owns the route table: it validates changes, persists them, pushes
@@ -127,6 +135,9 @@ func (s *Service) Put(r config.Route) (RouteStatus, bool, error) {
 	if !config.ValidHostname(r.Name) {
 		return RouteStatus{}, false, fmt.Errorf("%w: name %q must be a hostname like myapp or *.myapp", ErrInvalid, r.Name)
 	}
+	if err := s.checkReserved(r); err != nil {
+		return RouteStatus{}, false, err
+	}
 	if r.Port < 1 || r.Port > 65535 {
 		return RouteStatus{}, false, fmt.Errorf("%w: port %d out of range 1-65535", ErrInvalid, r.Port)
 	}
@@ -183,13 +194,13 @@ func (s *Service) Delete(name string) (config.Route, error) {
 // the proxy, then saves next; on save failure the proxy is rolled back so
 // memory, proxy and disk never disagree. Caller holds s.mu.
 func (s *Service) commit(next []config.Route) error {
-	all, active, conflicts := merge(next, s.docker)
+	all, active, conflicts := s.merge(next, s.docker)
 	if err := s.opts.Proxy.SetRoutes(all); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	cfg := &config.Config{SchemaVersion: config.SchemaVersion, Routes: next}
 	if err := config.Save(s.opts.ConfigPath, cfg); err != nil {
-		prev, _, _ := merge(s.routes, s.docker)
+		prev, _, _ := s.merge(s.routes, s.docker)
 		if rerr := s.opts.Proxy.SetRoutes(prev); rerr != nil {
 			return fmt.Errorf("%w (and restoring the previous routes failed: %w)", err, rerr)
 		}
@@ -240,4 +251,39 @@ func ports(routes []config.Route) []int {
 		}
 	}
 	return out
+}
+
+// checkReserved rejects routes for names Switchboard itself serves.
+func (s *Service) checkReserved(r config.Route) error {
+	for _, c := range claims(r) {
+		if slices.Contains(s.opts.Reserved, c) {
+			return fmt.Errorf("%w: %s is reserved for the Switchboard dashboard", ErrInvalid, c)
+		}
+	}
+	return nil
+}
+
+// Logs returns the recent requests to the route called name (qualified with
+// the default TLD), oldest first.
+func (s *Service) Logs(name string) ([]proxy.AccessLog, error) {
+	name = config.QualifyName(name, s.opts.TLDs)
+	s.mu.Lock()
+	known := slices.ContainsFunc(s.routes, func(r config.Route) bool { return r.Name == name }) ||
+		slices.ContainsFunc(s.active, func(d DockerRoute) bool { return d.Name == name })
+	s.mu.Unlock()
+	if !known {
+		return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
+	}
+	if s.opts.Logs == nil {
+		return []proxy.AccessLog{}, nil
+	}
+	return s.opts.Logs(name), nil
+}
+
+// CA reports the local CA.
+func (s *Service) CA() CAInfo {
+	if s.opts.CA == nil {
+		return CAInfo{}
+	}
+	return s.opts.CA()
 }
