@@ -76,7 +76,7 @@ run() {
 	done
 	! grep -q 'BEGIN Switchboard' /etc/hosts || fail "/etc/hosts block left behind"
 	for f in /usr/local/share/ca-certificates/Switchboard* /etc/ssl/certs/Switchboard*; do
-		[ ! -e "$f" ] && [ ! -L "$f" ] || fail "$f left behind"
+		if [ -e "$f" ] || [ -L "$f" ]; then fail "$f left behind"; fi
 	done
 	! openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt "$ca" >/dev/null 2>&1 || fail "CA still in the system bundle"
 	! curl -fsS -o /dev/null --max-time 5 https://probe.test/ 2>/dev/null || fail "https://probe.test still works"
