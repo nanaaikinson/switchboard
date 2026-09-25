@@ -1,17 +1,15 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { api, type CAInfo, type Listener } from "@/lib/api";
+import { useEffect, type ReactNode } from "react";
+import type { Listener } from "@/lib/api";
 import { useLive } from "@/lib/live";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export function SettingsPage() {
-  const { status } = useLive();
-  const [ca, setCA] = useState<CAInfo | null>(null);
-  const [caError, setCAError] = useState<string | null>(null);
+  const { status, ca, refreshCA } = useLive();
 
   useEffect(() => {
-    api.ca().then(setCA, (e: unknown) => setCAError(e instanceof Error ? e.message : String(e)));
-  }, []);
+    void refreshCA(); // trust may have changed since the app loaded
+  }, [refreshCA]);
 
   return (
     <div className="grid gap-6 md:grid-cols-2">
@@ -40,9 +38,7 @@ export function SettingsPage() {
           <CardTitle>Certificates</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-sm" data-testid="trust">
-          {caError ? (
-            <p className="text-destructive">{caError}</p>
-          ) : !ca ? (
+          {!ca ? (
             <p className="text-muted-foreground">Loading…</p>
           ) : !ca.present ? (
             <p>

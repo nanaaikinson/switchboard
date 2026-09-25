@@ -47,7 +47,7 @@ test("shows the daemon's error when it rejects a route", async ({ page }) => {
 });
 
 test("toggles the HTTPS redirect", async ({ page, request }) => {
-  const toggle = page.getByRole("switch", { name: "Redirect HTTP to HTTPS for myapp.test" });
+  const toggle = page.getByRole("switch", { name: "Force HTTPS for myapp.test" });
   await expect(toggle).toBeChecked();
   await toggle.click();
   await expect(toggle).not.toBeChecked();
@@ -101,13 +101,74 @@ test("settings show TLDs and trust status", async ({ page, request }) => {
   await page.getByRole("link", { name: "Settings" }).click();
   await expect(page.getByTestId("tlds")).toHaveText(".test");
   const trust = page.getByTestId("trust");
-  await expect(trust).toContainText("Not trusted");
-  await expect(trust).toContainText("sb trust");
+  await expect(trust).toContainText("Trusted by the system");
   await expect(trust).toContainText("a1b2c3d4e5f6");
 
-  await request.post("/__test/ca", { data: { trusted: true } });
+  await request.post("/__test/ca", { data: { trusted: false, error: "certificate is not trusted" } });
+  await page.getByRole("link", { name: "Routes" }).click();
+  await page.getByRole("link", { name: "Settings" }).click(); // re-checks trust
+  await expect(page.getByTestId("trust")).toContainText("Not trusted");
+  await expect(page.getByTestId("trust")).toContainText("sb trust");
+});
+
+test("HTTPS ready: a green lock with the certificate name, and no banner", async ({ page }) => {
+  await expect(page.getByTestId("https-banner")).toHaveCount(0);
+  const lock = row(page, "myapp.test").getByRole("img", { name: "HTTPS ready" });
+  await expect(lock).toBeVisible();
+  await lock.hover();
+  await expect(page.getByRole("tooltip")).toContainText("Certificate: myapp.test");
+
+  // A route that also matches subdomains is covered by a wildcard too.
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await row(page, "api.myapp.test").getByRole("img", { name: "HTTPS ready" }).hover();
+  await expect(page.getByRole("tooltip")).toContainText("api.myapp.test, *.api.myapp.test");
+});
+
+test("untrusted CA: a warning banner, amber locks, and Check again", async ({ page, request }) => {
+  await request.post("/__test/ca", { data: { trusted: false } });
   await page.reload();
-  await expect(page.getByTestId("trust")).toContainText("Trusted by the system");
+  const banner = page.getByTestId("https-banner");
+  await expect(banner).toContainText("Browsers don't trust Switchboard's certificates yet");
+  await expect(banner).toContainText("sb trust");
+  await expect(row(page, "myapp.test").getByRole("img", { name: "HTTPS works, certificate not trusted" })).toBeVisible();
+  // Links still use https://: it works, with a warning.
+  await expect(row(page, "myapp.test").getByRole("link", { name: "myapp.test", exact: true })).toHaveAttribute("href", "https://myapp.test/");
+
+  // The user runs sb trust, then checks again.
+  await request.post("/__test/ca", { data: { trusted: true } });
+  await banner.getByRole("button", { name: "Check again" }).click();
+  await expect(banner).toHaveCount(0);
+  await expect(row(page, "myapp.test").getByRole("img", { name: "HTTPS ready" })).toBeVisible();
+});
+
+test("no CA at all counts as untrusted", async ({ page, request }) => {
+  await request.post("/__test/ca", { data: { present: false, trusted: false } });
+  await page.reload();
+  await expect(page.getByTestId("https-banner")).toContainText("There's no local CA yet.");
+});
+
+test("HTTPS down: an error banner, open locks, and plain-HTTP links", async ({ page, request }) => {
+  await request.post("/__test/https", {
+    data: { listening: false, addrs: null, error: "proxy: listen 127.0.0.1:443: bind: address already in use" },
+  });
+  await page.reload();
+  const banner = page.getByTestId("https-banner");
+  await expect(banner).toContainText("HTTPS isn't running");
+  await expect(banner).toContainText("address already in use");
+  await expect(banner).toContainText("sb doctor");
+  const lock = row(page, "myapp.test").getByRole("img", { name: "HTTPS unavailable" });
+  await expect(lock).toBeVisible();
+  await lock.hover();
+  await expect(page.getByRole("tooltip")).toContainText("only works over plain HTTP");
+  // The fake moves plain HTTP to :8080, so the port must be kept.
+  await expect(row(page, "myapp.test").getByRole("link", { name: "myapp.test", exact: true })).toHaveAttribute("href", "http://myapp.test:8080/");
+});
+
+test("the Force HTTPS column explains what it does", async ({ page }) => {
+  await page.getByRole("columnheader", { name: /Force HTTPS/ }).locator("span").first().hover();
+  await expect(page.getByRole("tooltip")).toContainText("HTTPS always works; turn this off to also serve plain HTTP.");
+  await expect(page.getByRole("switch", { name: "Force HTTPS", exact: true })).toBeChecked(); // the add form's default
 });
 
 test("follows the system color scheme", async ({ page }) => {

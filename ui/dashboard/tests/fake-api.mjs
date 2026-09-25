@@ -29,9 +29,10 @@ function initialState() {
       fingerprint: "a1b2c3d4e5f6",
       not_after: "2036-09-22T00:00:00Z",
       tlds: ["test"],
-      trusted: false,
-      error: "certificate is not trusted",
+      trusted: true,
     },
+    https: { addrs: ["127.0.0.1:443", "[::1]:443"], listening: true },
+    proxy: { addrs: ["127.0.0.1:80", "[::1]:80"], listening: true },
   };
 }
 
@@ -44,8 +45,8 @@ function status() {
     uptime_seconds: 3725,
     tlds: ["test"],
     dns: { addrs: ["127.0.0.1:15353"], listening: true },
-    proxy: { addrs: ["127.0.0.1:80", "[::1]:80"], listening: true },
-    https: { addrs: ["127.0.0.1:443", "[::1]:443"], listening: true },
+    proxy: state.proxy,
+    https: state.https,
     docker: {
       enabled: true,
       connected: true,
@@ -136,6 +137,13 @@ async function handleTest(req, res, url) {
     }
     if (ev.type === "route.added") state.routes.push(ev.route);
     publish(ev.type, ev.route);
+    return send(res, 200, {});
+  }
+  if (url.pathname === "/__test/https") {
+    // e.g. { listening: false, error: "..." }; HTTP moves to :8080 to test port suffixes.
+    const b = await body(req);
+    state.https = { ...state.https, ...b };
+    if (b.listening === false) state.proxy = { addrs: ["127.0.0.1:8080"], listening: true };
     return send(res, 200, {});
   }
   if (url.pathname === "/__test/ca") {

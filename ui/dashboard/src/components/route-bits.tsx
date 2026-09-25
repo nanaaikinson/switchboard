@@ -1,4 +1,5 @@
-import type { Health, RouteStatus } from "@/lib/api";
+import { Lock, LockOpen } from "lucide-react";
+import { certNames, type Health, type HTTPSState, type RouteStatus } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -55,4 +56,45 @@ export function readOnlyReason(r: RouteStatus): string | null {
     default:
       return null;
   }
+}
+
+const lockText: Record<Exclude<HTTPSState, "unknown">, string> = {
+  ready: "HTTPS ready",
+  untrusted: "HTTPS works, certificate not trusted",
+  down: "HTTPS unavailable",
+};
+
+/** A lock showing whether https:// works for the route, with its certificate in the tooltip. */
+export function HTTPSLock({ route, state }: { route: Pick<RouteStatus, "name" | "wildcard">; state: HTTPSState }) {
+  if (state === "unknown") return <Lock className="size-3.5 text-muted-foreground/40" aria-hidden />;
+  const names = certNames(route);
+  const Icon = state === "down" ? LockOpen : Lock;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span role="img" aria-label={lockText[state]} data-https={state} tabIndex={0} className="inline-flex">
+          <Icon
+            className={cn(
+              "size-3.5",
+              state === "ready" && "text-success",
+              state === "untrusted" && "text-warning",
+              state === "down" && "text-muted-foreground",
+            )}
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-72">
+        {state === "down" ? (
+          <>HTTPS isn't running, so this route only works over plain HTTP. Run sb doctor to see why.</>
+        ) : (
+          <>
+            {state === "ready" ? "HTTPS with a trusted certificate" : "HTTPS works, but browsers will warn until you run sb trust"}
+            <span className="mt-1 block font-mono text-[11px] opacity-80">
+              Certificate: {names.join(", ")}
+            </span>
+          </>
+        )}
+      </TooltipContent>
+    </Tooltip>
+  );
 }

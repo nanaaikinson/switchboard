@@ -113,16 +113,41 @@ export const api = {
   ca: () => call<CAInfo>("GET", "/v1/ca"),
 };
 
-/** The URL a route opens at, or null for a pure wildcard like *.x.test. */
-export function routeURL(r: Pick<Route, "name">, https: Listener | undefined): string | null {
+/**
+ * The URL a route opens at, or null for a pure wildcard like *.x.test. It is
+ * https:// while the HTTPS proxy is listening, else plain http://.
+ */
+export function routeURL(r: Pick<Route, "name">, status: Pick<Status, "https" | "proxy"> | null | undefined): string | null {
   if (r.name.startsWith("*.")) return null;
+  const secure = status?.https.listening ?? true;
+  const l = secure ? status?.https : status?.proxy;
+  const defaultPort = secure ? "443" : "80";
   let port = "";
-  const addr = https?.addrs?.[0];
+  const addr = l?.addrs?.[0];
   if (addr) {
     const p = addr.slice(addr.lastIndexOf(":") + 1);
-    if (p !== "443") port = ":" + p;
+    if (p !== defaultPort) port = ":" + p;
   }
-  return `https://${r.name}${port}/`;
+  return `${secure ? "https" : "http"}://${r.name}${port}/`;
+}
+
+/**
+ * The certificate names that cover a route: its own name, and for routes that
+ * also match subdomains, a wildcard (issued per subdomain level).
+ */
+export function certNames(r: Pick<Route, "name" | "wildcard">): string[] {
+  if (r.name.startsWith("*.")) return [r.name];
+  return r.wildcard ? [r.name, `*.${r.name}`] : [r.name];
+}
+
+/** How well HTTPS works for routes right now. */
+export type HTTPSState = "unknown" | "ready" | "untrusted" | "down";
+
+export function httpsState(status: Status | null, ca: CAInfo | null): HTTPSState {
+  if (!status) return "unknown";
+  if (!status.https.listening) return "down";
+  if (!ca) return "unknown";
+  return ca.present && ca.trusted ? "ready" : "untrusted";
 }
 
 const label = String.raw`[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?`;

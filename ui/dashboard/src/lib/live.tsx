@@ -1,14 +1,18 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { api, type RouteEvent, type RouteStatus, type Status } from "./api";
+import { api, type CAInfo, type RouteEvent, type RouteStatus, type Status } from "./api";
 
 export type Connection = "connecting" | "live" | "reconnecting";
 
 interface Live {
   status: Status | null;
   routes: RouteStatus[] | null;
+  /** The local CA and whether the system trusts it; null until loaded. */
+  ca: CAInfo | null;
   connection: Connection;
   error: string | null;
   refresh: () => Promise<void>;
+  /** Re-checks CA trust, e.g. after the user runs sb trust. */
+  refreshCA: () => Promise<void>;
 }
 
 const LiveContext = createContext<Live | null>(null);
@@ -22,6 +26,7 @@ const LiveContext = createContext<Live | null>(null);
 export function LiveProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<Status | null>(null);
   const [routes, setRoutes] = useState<RouteStatus[] | null>(null);
+  const [ca, setCA] = useState<CAInfo | null>(null);
   const [connection, setConnection] = useState<Connection>("connecting");
   const [error, setError] = useState<string | null>(null);
   const reload = useRef<number | undefined>(undefined);
@@ -37,13 +42,25 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const refreshCA = useCallback(async () => {
+    try {
+      setCA(await api.ca());
+    } catch {
+      /* the status error already explains it */
+    }
+  }, []);
+
   useEffect(() => {
     void refresh();
+    void refreshCA();
     const es = new EventSource("/v1/events");
     let dropped = false;
     es.onopen = () => {
       setConnection("live");
-      if (dropped) void refresh();
+      if (dropped) {
+        void refresh();
+        void refreshCA();
+      }
     };
     es.onerror = () => {
       dropped = true;
@@ -64,9 +81,12 @@ export function LiveProvider({ children }: { children: ReactNode }) {
       es.close();
       window.clearTimeout(reload.current);
     };
-  }, [refresh]);
+  }, [refresh, refreshCA]);
 
-  const value = useMemo(() => ({ status, routes, connection, error, refresh }), [status, routes, connection, error, refresh]);
+  const value = useMemo(
+    () => ({ status, routes, ca, connection, error, refresh, refreshCA }),
+    [status, routes, ca, connection, error, refresh, refreshCA],
+  );
   return <LiveContext.Provider value={value}>{children}</LiveContext.Provider>;
 }
 

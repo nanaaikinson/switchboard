@@ -11,7 +11,18 @@ reserved: `sb add`, `sb apply` and Docker can't take it. What it shows:
 - **Routes:** each route's status (up, down, not checked yet), its name as a link, its
   port and where it comes from (`sb add`, a `switchboard.toml`, or a Docker container).
   Updates arrive live from `/v1/events`.
-- **Editing:** toggle HTTPS redirects, delete routes, and add routes with validation.
+- **HTTPS:** every route is served over HTTPS; there's nothing to enable. A lock next to
+  each name shows whether that works right now, and its tooltip names the certificate
+  served (`myapp.test`, plus `*.myapp.test` for routes that match subdomains):
+  - **green:** HTTPS is up and the system trusts the local CA.
+  - **amber:** HTTPS works but browsers will warn. A banner says to run `sb trust`, with
+    a *Check again* button.
+  - **open:** the HTTPS proxy isn't running. A banner shows the daemon's error and
+    points to `sb doctor`, and links switch to `http://` so they still work.
+
+  **Force HTTPS** (per route, on by default) only decides whether `http://` requests
+  are redirected to `https://`. Turn it off to serve plain HTTP as well.
+- **Editing:** toggle Force HTTPS, delete routes, and add routes with validation.
   Routes from project files and containers are read-only here, because the file or the
   container's labels own them. A tooltip says where to change them.
 - **Recent requests:** the last 100 requests to each route (time, method, path, status,

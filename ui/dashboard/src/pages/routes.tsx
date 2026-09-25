@@ -1,9 +1,10 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
-import { ExternalLink, ScrollText, Trash2 } from "lucide-react";
-import { api, routeURL, validName, validPort, type RouteStatus } from "@/lib/api";
+import { ExternalLink, Info, ScrollText, Trash2 } from "lucide-react";
+import { api, httpsState, routeURL, validName, validPort, type HTTPSState, type RouteStatus } from "@/lib/api";
 import { useLive } from "@/lib/live";
-import { readOnlyReason, SourceBadge, StatusDot } from "@/components/route-bits";
+import { HTTPSBanner } from "@/components/https-banner";
+import { HTTPSLock, readOnlyReason, SourceBadge, StatusDot } from "@/components/route-bits";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,10 +27,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 export function RoutesPage() {
-  const { routes, status, refresh } = useLive();
+  const { routes, status, ca, refresh } = useLive();
   const tld = status?.tlds[0] ?? "test";
+  const https = httpsState(status, ca);
   return (
     <div className="space-y-6">
+      <HTTPSBanner state={https} />
       <AddRouteForm tld={tld} onAdded={refresh} />
       <Card>
         <CardHeader>
@@ -46,7 +49,7 @@ export function RoutesPage() {
               No routes yet. Add one above, or run <code className="font-mono">sb add myapp 3000</code>.
             </p>
           ) : (
-            <RoutesTable routes={routes} onChange={refresh} />
+            <RoutesTable routes={routes} https={https} onChange={refresh} />
           )}
         </CardContent>
       </Card>
@@ -150,8 +153,8 @@ function AddRouteForm({ tld, onAdded }: { tld: string; onAdded: () => Promise<vo
           </div>
           <div className="flex flex-wrap gap-6 sm:col-span-3">
             <label className="flex items-center gap-2 text-sm">
-              <Switch checked={redirect} onCheckedChange={setRedirect} aria-label="Redirect HTTP to HTTPS" />
-              Redirect HTTP to HTTPS
+              <Switch checked={redirect} onCheckedChange={setRedirect} aria-label="Force HTTPS" />
+              Force HTTPS <span className="text-muted-foreground">(redirect http:// to https://)</span>
             </label>
             <label className="flex items-center gap-2 text-sm">
               <Checkbox checked={wildcard} onCheckedChange={(v) => setWildcard(v === true)} aria-label="Also match subdomains" />
@@ -169,7 +172,7 @@ function AddRouteForm({ tld, onAdded }: { tld: string; onAdded: () => Promise<vo
   );
 }
 
-function RoutesTable({ routes, onChange }: { routes: RouteStatus[]; onChange: () => Promise<void> }) {
+function RoutesTable({ routes, https, onChange }: { routes: RouteStatus[]; https: HTTPSState; onChange: () => Promise<void> }) {
   const { status } = useLive();
   const [error, setError] = useState<string | null>(null);
 
@@ -199,7 +202,18 @@ function RoutesTable({ routes, onChange }: { routes: RouteStatus[]; onChange: ()
             <TableHead>Name</TableHead>
             <TableHead className="w-20">Port</TableHead>
             <TableHead className="hidden md:table-cell">Source</TableHead>
-            <TableHead className="w-24">Redirect</TableHead>
+            <TableHead className="w-28">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex cursor-default items-center gap-1" tabIndex={0}>
+                    Force HTTPS <Info className="size-3.5 text-muted-foreground" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-64">
+                  Redirects http:// to https://. HTTPS always works; turn this off to also serve plain HTTP.
+                </TooltipContent>
+              </Tooltip>
+            </TableHead>
             <TableHead className="w-24 text-right">
               <span className="sr-only">Actions</span>
             </TableHead>
@@ -207,7 +221,7 @@ function RoutesTable({ routes, onChange }: { routes: RouteStatus[]; onChange: ()
         </TableHeader>
         <TableBody>
           {routes.map((r) => {
-            const url = routeURL(r, status?.https);
+            const url = routeURL(r, status);
             const readOnly = readOnlyReason(r);
             return (
               <TableRow key={r.name} data-route={r.name}>
@@ -215,6 +229,9 @@ function RoutesTable({ routes, onChange }: { routes: RouteStatus[]; onChange: ()
                   <StatusDot health={r.health} />
                 </TableCell>
                 <TableCell className="font-medium">
+                  <span className="mr-1.5 inline-flex align-[-2px]">
+                    <HTTPSLock route={r} state={https} />
+                  </span>
                   {url ? (
                     <a href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:underline">
                       {r.name}
@@ -234,7 +251,7 @@ function RoutesTable({ routes, onChange }: { routes: RouteStatus[]; onChange: ()
                     <Switch
                       checked={r.redirect_https}
                       disabled={!!readOnly}
-                      aria-label={`Redirect HTTP to HTTPS for ${r.name}`}
+                      aria-label={`Force HTTPS for ${r.name}`}
                       onCheckedChange={(on) => run(() => api.put({ ...r, redirect_https: on }))}
                     />
                   </ReadOnlyTip>
