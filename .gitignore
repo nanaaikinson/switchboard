@@ -41,3 +41,6 @@ go.work.sum
 internal/file/testdata/
 
 .DS_Store
+
+# sb build output
+/sb
