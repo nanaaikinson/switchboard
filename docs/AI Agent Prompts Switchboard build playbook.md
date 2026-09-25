@@ -27,13 +27,15 @@ Commit this as `AGENTS.md` in the repo root so every agent session starts with t
 # Switchboard — agent context
 
 ## What this is
+
 Switchboard maps local ports to trusted HTTPS names: localhost:7000 -> https://myapp.test,
-with subdomains and wildcards (api.myapp.test, *.myapp.test). It is a background daemon
+with subdomains and wildcards (api.myapp.test, \*.myapp.test). It is a background daemon
 with a CLI (`sb`), a web dashboard, and a Tauri tray app, for macOS, Linux and Windows.
 
 ## Architecture
+
 - One Go binary, three modes: `sb daemon`, `sb <command>` (CLI), `sb helper` (privileged).
-- Daemon: route table, DNS server (127.0.0.1:5353), reverse proxy (:80/:443), local CA,
+- Daemon: route table, DNS server (127.0.0.1:15353), reverse proxy (:80/:443), local CA,
   control API (JSON over HTTP on a Unix socket / Windows named pipe, versioned /v1).
 - Helper: runs as root/SYSTEM. ONLY does: bind 80/443 and pass sockets to the daemon,
   write/remove split-DNS config, install/remove the CA from trust stores. Nothing else.
@@ -42,10 +44,12 @@ with a CLI (`sb`), a web dashboard, and a Tauri tray app, for macOS, Linux and W
   proxy libraries (Caddy, Traefik, etc.).
 
 ## Layout
-cmd/sb/  internal/{dns,proxy,pki,api,config,docker,platform/{darwin,linux,windows}}
-ui/dashboard/ (embedded)  app/tray/ (Tauri)  install/  docs/
+
+cmd/sb/ internal/{dns,proxy,pki,api,config,docker,platform/{darwin,linux,windows}}
+ui/dashboard/ (embedded) app/tray/ (Tauri) install/ docs/
 
 ## Conventions
+
 - Go (latest stable), standard library first. Allowed deps: cobra, miekg/dns,
   smallstep/truststore, Docker SDK, BurntSushi/toml. Ask before adding others.
 - OS-specific code only in internal/platform/<os>, behind interfaces; use build tags.
@@ -59,6 +63,7 @@ ui/dashboard/ (embedded)  app/tray/ (Tauri)  install/  docs/
 - Every system change must have a matching revert in `sb uninstall`.
 
 ## Safety rules for agents
+
 - Never run commands with sudo, never run `sb setup` or `sb helper`, never edit
   /etc, the hosts file, trust stores or system services on the host machine.
 - Never commit keys, certificates or signing credentials.
@@ -66,11 +71,13 @@ ui/dashboard/ (embedded)  app/tray/ (Tauri)  install/  docs/
 - Bind to loopback only unless the code path is explicit LAN mode.
 
 ## Commands
+
 - Build: `go build ./cmd/sb`
-- Test: `go test ./...`  |  Integration: `go test -tags integration ./...`
-- Lint: `golangci-lint run`  |  Vulns: `govulncheck ./...`
+- Test: `go test ./...` | Integration: `go test -tags integration ./...`
+- Lint: `golangci-lint run` | Vulns: `govulncheck ./...`
 
 ## Definition of done
+
 Code + tests + docs (docs/ or --help text) + passes lint and tests + no new deps
 without approval + uninstall path covered.
 ```
@@ -96,7 +103,7 @@ Propose the plan first; don't write code until I approve.
 
 ```
 Read AGENTS.md. Implement internal/dns: a DNS server using miekg/dns that listens on a
-configurable address (default 127.0.0.1:5353, UDP and TCP) and answers A with 127.0.0.1
+configurable address (default 127.0.0.1:15353, UDP and TCP) and answers A with 127.0.0.1
 and AAAA with ::1 for any name under the configured TLDs (default ["test"]), including
 the bare TLD's subdomains at any depth. Everything else returns REFUSED; it must never
 forward queries. Support changing TLDs at runtime without restart. Write unit tests
@@ -138,7 +145,7 @@ Read AGENTS.md. Implement internal/platform/darwin behind a Platform interface w
 InstallResolver(tld, port), RemoveResolver(tld), InstallService(), RemoveService(),
 and the helper protocol. `sb setup` must: print exactly what it will change, ask for
 confirmation, then (via a single sudo invocation of `sb helper install`) write
-/etc/resolver/<tld> ("nameserver 127.0.0.1\nport 5353"), install a LaunchDaemon for the
+/etc/resolver/<tld> ("nameserver 127.0.0.1\nport 15353"), install a LaunchDaemon for the
 helper that binds :80 and passes the listener to the user daemon over its socket, and a
 LaunchAgent for `sb daemon`. `sb uninstall` reverses every step and is idempotent.
 Write the code and tests for file generation, but DO NOT run setup, sudo, or launchctl
@@ -183,7 +190,7 @@ Then add HTTPS checks to `sb doctor`.
 ```
 Read AGENTS.md. Implement internal/platform/linux with the same Platform interface as
 darwin. Split DNS: if systemd-resolved is active, write
-/etc/systemd/resolved.conf.d/switchboard-<tld>.conf with DNS=127.0.0.1:5353 and
+/etc/systemd/resolved.conf.d/switchboard-<tld>.conf with DNS=127.0.0.1:15353 and
 Domains=~<tld>, then restart resolved; otherwise, if NetworkManager uses dnsmasq, write a
 dnsmasq drop-in; otherwise fall back to hosts-file entries for exact names and warn that
 wildcards won't work. Services: systemd system unit for the helper, user unit for the
