@@ -23,7 +23,9 @@ func Handler(s *Service) http.Handler {
 		writeJSON(w, http.StatusOK, s.Routes())
 	})
 	mux.HandleFunc("POST /v1/routes", func(w http.ResponseWriter, r *http.Request) {
-		var route config.Route
+		// redirect_https defaults to on, as for 'sb add', project files and
+		// Docker; a body that leaves it out keeps that default.
+		route := config.Route{RedirectHTTPS: true}
 		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&route); err != nil {

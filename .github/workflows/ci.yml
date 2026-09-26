@@ -49,6 +49,11 @@ jobs:
         with:
           version: v2.13
 
+      # Known vulnerabilities in the code paths sb actually calls.
+      - name: Vulnerabilities
+        if: matrix.os == 'ubuntu-latest'
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
   powershell:
     name: powershell
     runs-on: windows-latest

@@ -21,10 +21,12 @@ case "$triple" in
 aarch64-apple-darwin) build darwin arm64 "$out/sb-$triple" ;;
 x86_64-apple-darwin) build darwin amd64 "$out/sb-$triple" ;;
 universal-apple-darwin)
-	build darwin arm64 "$out/sb-arm64.tmp"
-	build darwin amd64 "$out/sb-amd64.tmp"
-	lipo -create -output "$out/sb-$triple" "$out/sb-arm64.tmp" "$out/sb-amd64.tmp"
-	rm -f "$out/sb-arm64.tmp" "$out/sb-amd64.tmp"
+	# tauri build --target universal-apple-darwin compiles each architecture
+	# on its own, and each pass needs its own sidecar; the bundle gets the
+	# universal one.
+	build darwin arm64 "$out/sb-aarch64-apple-darwin"
+	build darwin amd64 "$out/sb-x86_64-apple-darwin"
+	lipo -create -output "$out/sb-$triple" "$out/sb-aarch64-apple-darwin" "$out/sb-x86_64-apple-darwin"
 	;;
 x86_64-pc-windows-msvc) build windows amd64 "$out/sb-$triple.exe" ;;
 aarch64-pc-windows-msvc) build windows arm64 "$out/sb-$triple.exe" ;;

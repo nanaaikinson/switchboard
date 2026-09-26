@@ -256,6 +256,11 @@ func TestHTTPHandlers(t *testing.T) {
 	}{
 		{"POST", "/v1/routes", `{"name":"myapp","port":7000}`, 201, `"name":"myapp.test"`},
 		{"POST", "/v1/routes", `{"name":"myapp","port":7001}`, 200, `"port":7001`},
+		// redirect_https defaults to on when left out, as everywhere else.
+		{"POST", "/v1/routes", `{"name":"dflt","port":7002}`, 201, `"redirect_https":true`},
+		{"POST", "/v1/routes", `{"name":"plain","port":7003,"redirect_https":false}`, 201, `"redirect_https":false`},
+		{"DELETE", "/v1/routes/dflt", "", 200, `"name":"dflt.test"`},
+		{"DELETE", "/v1/routes/plain", "", 200, `"name":"plain.test"`},
 		{"POST", "/v1/routes", `{"name":"x","port":1,"bogus":true}`, 400, `unknown field`},
 		{"POST", "/v1/routes", `not json`, 400, `"error"`},
 		{"POST", "/v1/routes", `{"name":"bad name","port":1}`, 400, `must be a hostname`},
