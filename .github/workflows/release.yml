@@ -215,6 +215,20 @@ jobs:
           shopt -s nullglob
           files=(dmg/*.dmg macos/*.app.tar.gz macos/*.app.tar.gz.sig)
           gh release upload "$TAG" "${files[@]}" --clobber
+          # Checksums of the updater files, handed to publish-updates as an
+          # artifact: it re-downloads them from the release, whose assets
+          # anyone with write access could replace.
+          updater=(macos/*.app.tar.gz macos/*.app.tar.gz.sig)
+          mkdir -p "$RUNNER_TEMP/tray-sums"
+          if [ ${#updater[@]} -gt 0 ]; then
+            for f in "${updater[@]}"; do printf '%s  %s\n' "$(shasum -a 256 < "$f" | cut -d' ' -f1)" "$(basename "$f")"; done > "$RUNNER_TEMP/tray-sums/macos.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tray-sums-macos
+          path: ${{ runner.temp }}/tray-sums
+          if-no-files-found: ignore
 
       # `brew install --cask nanaaikinson/tap/switchboard`. Stable releases
       # only, and only notarized builds: Gatekeeper blocks an unsigned app.
@@ -375,6 +389,18 @@ jobs:
           shopt -s nullglob
           files=(nsis/*.exe nsis/*.exe.sig msi/*.msi)
           gh release upload "$TAG" "${files[@]}" --clobber
+          # Checksums of the updater files, for publish-updates (see macOS).
+          updater=(nsis/*-setup.exe nsis/*-setup.exe.sig)
+          mkdir -p "$RUNNER_TEMP/tray-sums"
+          if [ ${#updater[@]} -gt 0 ]; then
+            for f in "${updater[@]}"; do printf '%s  %s\n' "$(sha256sum < "$f" | cut -d' ' -f1)" "$(basename "$f")"; done > "$RUNNER_TEMP/tray-sums/windows.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tray-sums-windows
+          path: ${{ runner.temp }}/tray-sums
+          if-no-files-found: ignore
 
       # `winget install Switchboard.Switchboard`: a PR to microsoft/winget-pkgs
       # with the portable sb.exe from the release zips. Stable releases of a
@@ -464,6 +490,15 @@ jobs:
           done
           gh release upload "$TAG" dist/*.minisig --clobber
 
+      # Checksums of the tray updater files as the tray jobs built them.
+      - uses: actions/download-artifact@v4
+        if: steps.cfg.outputs.enabled == 'true'
+        continue-on-error: true # no tray jobs uploaded any: no tray manifest
+        with:
+          pattern: tray-sums-*
+          path: tray-sums
+          merge-multiple: true
+
       - name: Build the manifests
         if: steps.cfg.outputs.enabled == 'true'
         run: |
@@ -474,6 +509,16 @@ jobs:
           mkdir -p tray
           gh release download "$TAG" -D tray -p '*.app.tar.gz' -p '*.app.tar.gz.sig' -p '*-setup.exe' -p '*-setup.exe.sig' || true
           if ls tray/*.sig > /dev/null 2>&1; then
+            # Sign a manifest only for the exact bundles the tray jobs built,
+            # so a replaced asset (an older, validly signed bundle and .sig)
+            # can't be published as this version.
+            cat tray-sums/*.sha256 > tray.sha256 2>/dev/null || true
+            for f in tray/*; do
+              awk -v n="$(basename "$f")" '$2 == n { found = 1 } END { exit !found }' tray.sha256 ||
+                { echo "::error::$(basename "$f") is not one of the tray jobs' files"; exit 1; }
+            done
+            (cd tray && sha256sum -c ../tray.sha256) ||
+              { echo "::error::a tray updater file in the release differs from what the tray jobs built"; exit 1; }
             go run ./cmd/sb-manifest -tray -version "$TAG" -base-url "$base" -rollout "$ROLLOUT" -notes-file notes.md \
               tray/*.app.tar.gz tray/*-setup.exe > tray.json
           fi

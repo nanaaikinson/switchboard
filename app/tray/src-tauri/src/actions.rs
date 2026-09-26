@@ -233,6 +233,9 @@ async fn check_signed_update(app: &AppHandle) -> Result<(), String> {
     let sig = String::from_utf8(sig).map_err(|_| "the update manifest's signature isn't text".to_string())?;
     let signed =
         signed_manifest::verify(&pk, channel, &manifest, &sig).map_err(|e| format!("{e}. Nothing was installed."))?;
+    let date = signed_manifest::pub_date(&signed).map_err(|e| format!("{e}. Nothing was installed."))?;
+    signed_manifest::check_not_older(&daemon::config_dir().join("tray-update-state.json"), channel, date)
+        .map_err(|e| format!("{e}. Nothing was installed."))?;
 
     let url: tauri::Url = endpoint.parse().map_err(|e| format!("{endpoint}: {e}"))?;
     let update = app

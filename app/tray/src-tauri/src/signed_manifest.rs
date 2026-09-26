@@ -6,6 +6,8 @@
 //! "switchboard-tray <channel> <version>" (TrayManifestComment in
 //! internal/update). This checks it before anything is installed.
 
+use std::path::Path;
+
 use minisign_verify::{PublicKey, Signature};
 use serde_json::Value;
 
@@ -51,6 +53,49 @@ pub fn verify(pk: &PublicKey, channel: &str, manifest: &[u8], sig: &str) -> Resu
         return Err(format!("the stable channel offers pre-release {version}"));
     }
     Ok(json)
+}
+
+/// The manifest's pub_date. The release writes it as "YYYY-MM-DDTHH:MM:SSZ",
+/// which sorts as text; anything else is refused.
+pub fn pub_date(manifest: &Value) -> Result<&str, String> {
+    let d = manifest["pub_date"].as_str().unwrap_or_default();
+    let shape = d.len() == 20
+        && d.bytes().enumerate().all(|(i, b)| match i {
+            4 | 7 => b == b'-',
+            10 => b == b'T',
+            13 | 16 => b == b':',
+            19 => b == b'Z',
+            _ => b.is_ascii_digit(),
+        });
+    if shape {
+        Ok(d)
+    } else {
+        Err(format!("the update manifest's pub_date {d:?} isn't a UTC time"))
+    }
+}
+
+/// Refuses a manifest older than the newest one accepted before for
+/// `channel`, as recorded in the JSON file `state`, and records this one
+/// otherwise. The signature ties the date to the manifest, so an update host
+/// can't replay an older signed manifest to hold the tray on an old release.
+pub fn check_not_older(state: &Path, channel: &str, pub_date: &str) -> Result<(), String> {
+    let mut seen: serde_json::Map<String, Value> = std::fs::read(state)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    if let Some(newest) = seen.get(channel).and_then(|v| v.as_str())
+        && pub_date < newest
+    {
+        return Err(format!(
+            "the update manifest is from {pub_date}, older than one already seen ({newest}); the update host may be replaying it"
+        ));
+    }
+    seen.insert(channel.to_owned(), Value::String(pub_date.to_owned()));
+    if let Some(dir) = state.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("save update state: {e}"))?;
+    }
+    let data = serde_json::to_vec(&seen).map_err(|e| e.to_string())?;
+    crate::rollout::write_private(state, &data).map_err(|e| format!("save update state: {e}"))
 }
 
 /// Checks that the update Tauri is about to install comes from the manifest
@@ -101,6 +146,37 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pub_date_shape() {
+        for (d, ok) in [
+            ("2026-09-26T08:00:00Z", true),
+            ("2026-09-26T08:00:00+01:00", false),
+            ("2026-09-26 08:00:00Z", false),
+            ("", false),
+        ] {
+            let m = serde_json::json!({"pub_date": d});
+            assert_eq!(pub_date(&m).is_ok(), ok, "{d}");
+        }
+    }
+
+    #[test]
+    fn older_manifests_are_refused() {
+        let dir = std::env::temp_dir().join(format!("sbtraystate{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = dir.join("tray-update-state.json");
+        assert!(check_not_older(&state, "stable", "2026-09-01T00:00:00Z").is_ok());
+        assert!(check_not_older(&state, "stable", "2026-09-01T00:00:00Z").is_ok());
+        assert!(check_not_older(&state, "stable", "2026-09-02T00:00:00Z").is_ok());
+        assert!(check_not_older(&state, "stable", "2026-09-01T00:00:00Z").is_err());
+        assert!(check_not_older(&state, "beta", "2026-08-01T00:00:00Z").is_ok());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&state).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     // A real signature made with `tauri signer sign` and a throwaway key whose

@@ -116,7 +116,10 @@ signed too, as `tray/<channel>.json.minisig`, with the trusted comment
    the app (`TAURI_UPDATER_PUBKEY`, the same release key), and requires the trusted
    comment to name the endpoint's channel and the manifest's `version`. The stable
    channel may not offer a pre-release;
-3. has Tauri check that same endpoint, and refuses unless Tauri read the same manifest
+3. refuses a manifest whose `pub_date` is older than the newest one it accepted before
+   for the channel (kept in `<config dir>/tray-update-state.json`, mode 0600), so an
+   old signed manifest can't be replayed to hold the tray on an old release;
+4. has Tauri check that same endpoint, and refuses unless Tauri read the same manifest
    and is about to install exactly the signed version.
 
 So an old, validly signed bundle can't be offered as a newer version. The rollout
@@ -155,7 +158,10 @@ After that, every release's `publish-updates` job does the following:
 - signs each `sb` archive with the trusted comment above, and uploads the `.minisig`
   files to the release;
 - builds `sb.json` and `tray.json` with `go run ./cmd/sb-manifest`, which verifies every
-  signature against the public key first (so the Tauri key must be the release key);
+  signature against the public key first (so the Tauri key must be the release key).
+  The tray's updater files are re-downloaded from the release too, so first they must
+  match the SHA-256 sums the macOS and Windows jobs recorded as they uploaded them
+  (the `tray-sums-*` workflow artifacts), and nothing else may be there;
 - copies them to each channel of the updates repository (pre-releases to `beta`, and
   releases to both `stable` and `beta`), signs each `<channel>.json` as
   `sb-manifest <channel> <pub_date>`, and checks the result with
