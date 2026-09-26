@@ -164,6 +164,24 @@ func TestResolvedMode(t *testing.T) {
 	if e.exists("etc/systemd/resolved.conf.d") {
 		t.Error("left the drop-in dir setup made")
 	}
+
+	// A dir that was there before setup (NetworkManager ships an empty
+	// dnsmasq.d) stays.
+	if err := os.MkdirAll(filepath.Join(e.root, "etc/systemd/resolved.conf.d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.p.InstallResolver("test", 15353); err != nil {
+		t.Fatal(err)
+	}
+	if e.exists("etc/systemd/resolved.conf.d/" + createdMarker) {
+		t.Error("marked a dir setup didn't make")
+	}
+	if err := e.p.RemoveResolver("test"); err != nil {
+		t.Fatal(err)
+	}
+	if !e.exists("etc/systemd/resolved.conf.d") {
+		t.Error("removed a dir setup didn't make")
+	}
 	e.sys.calls = nil
 	if err := e.p.RemoveResolver("test"); err != nil || len(e.sys.mutating()) != 0 {
 		t.Errorf("second remove: %v, calls %v", err, e.sys.mutating())

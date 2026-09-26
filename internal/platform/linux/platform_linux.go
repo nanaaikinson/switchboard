@@ -169,7 +169,7 @@ func (p *Platform) InstallPlan(tld string, dnsPort int) []string {
 func (p *Platform) UninstallPlan(tld string) []string {
 	return []string{
 		fmt.Sprintf("Stop, disable and remove %s", p.daemonUnit()),
-		fmt.Sprintf("Remove %s or %s (only if Switchboard wrote them; their directories too if then empty) and the Switchboard block in %s", resolvedDropin(tld), dnsmasqDropin(tld), hostsPath),
+		fmt.Sprintf("Remove %s or %s (only if Switchboard wrote them; their directories too if setup made them) and the Switchboard block in %s", resolvedDropin(tld), dnsmasqDropin(tld), hostsPath),
 		fmt.Sprintf("Stop, disable and remove %s and %s", helperUnitPath, helperBinPath),
 	}
 }
