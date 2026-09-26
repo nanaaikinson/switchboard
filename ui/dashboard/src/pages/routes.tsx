@@ -1,10 +1,11 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { ExternalLink, Info, ScrollText, Trash2 } from "lucide-react";
-import { api, httpsState, routeURL, validName, validPort, type HTTPSState, type RouteStatus } from "@/lib/api";
+import { api, httpsState, qualifyName, routeURL, validName, validPort, type HTTPSState, type RouteStatus } from "@/lib/api";
 import { useLive } from "@/lib/live";
 import { HTTPSBanner } from "@/components/https-banner";
-import { HTTPSLock, readOnlyReason, SourceBadge, StatusDot } from "@/components/route-bits";
+import { MDNSBanner } from "@/components/mdns-banner";
+import { HTTPSLock, MDNSBadge, readOnlyReason, SourceBadge, StatusDot } from "@/components/route-bits";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,12 +29,13 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 
 export function RoutesPage() {
   const { routes, status, ca, refresh } = useLive();
-  const tld = status?.tlds[0] ?? "test";
+  const tlds = status?.tlds.length ? status.tlds : ["test"];
   const https = httpsState(status, ca);
   return (
     <div className="space-y-6">
       <HTTPSBanner state={https} />
-      <AddRouteForm tld={tld} onAdded={refresh} />
+      <MDNSBanner />
+      <AddRouteForm tlds={tlds} onAdded={refresh} />
       <Card>
         <CardHeader>
           <CardTitle>Routes</CardTitle>
@@ -74,7 +76,8 @@ export function RoutesPage() {
   );
 }
 
-function AddRouteForm({ tld, onAdded }: { tld: string; onAdded: () => Promise<void> }) {
+function AddRouteForm({ tlds, onAdded }: { tlds: string[]; onAdded: () => Promise<void> }) {
+  const tld = tlds[0];
   const [name, setName] = useState("");
   const [port, setPort] = useState("");
   const [redirect, setRedirect] = useState(true);
@@ -86,7 +89,7 @@ function AddRouteForm({ tld, onAdded }: { tld: string; onAdded: () => Promise<vo
   const cleanName = name.trim().toLowerCase().replace(/\.$/, "");
   const nameError = !validName(cleanName) ? "Use letters, digits and hyphens, like myapp or api.myapp. Start with *. to match every subdomain." : null;
   const portError = !validPort(port.trim()) ? "Enter a port from 1 to 65535." : null;
-  const qualified = cleanName && !cleanName.endsWith("." + tld) ? `${cleanName}.${tld}` : cleanName;
+  const qualified = qualifyName(cleanName, tlds);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -261,6 +264,7 @@ function RoutesTable({ routes, https, onChange }: { routes: RouteStatus[]; https
                     <span>{r.name}</span>
                   )}
                   {r.wildcard && <span className="ml-2 hidden text-xs text-muted-foreground sm:inline">+ *.{r.name}</span>}
+                  <MDNSBadge route={r} />
                 </TableCell>
                 <TableCell className="font-mono text-sm">{r.port}</TableCell>
                 <TableCell className="hidden md:table-cell">

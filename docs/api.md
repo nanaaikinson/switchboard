@@ -25,7 +25,8 @@ curl --unix-socket ~/.config/switchboard/sb.sock http://sb/v1/status
 ## Names
 
 Names without a Switchboard TLD get the default TLD (`test`) appended: `myapp` becomes
-`myapp.test`, and `*.tenants.myapp` becomes `*.tenants.myapp.test`. Names are
+`myapp.test`, and `*.tenants.myapp` becomes `*.tenants.myapp.test`. Names under
+`.local` are refused (`400`) until .local mode is on ([mdns.md](mdns.md)). Names are
 lowercased and must be LDH hostnames (letters, digits, hyphens), optionally prefixed
 with `*.`.
 
@@ -41,6 +42,9 @@ with `*.`.
 | `GET /v1/ca`               | none    | `200`, `CAInfo`                                                                   | none                                                           |
 | `POST /v1/pause`           | `{"paused": true}` | `200`, the same: every route answers 503 "Switchboard is paused" until `{"paused": false}` or a daemon restart. The dashboard keeps working. | `400` for a bad body |
 | `POST /v1/dashboard/login` | none    | `200`, `{"token": "…"}`: a one-time dashboard sign-in token ([dashboard.md](dashboard.md)); socket only | none                  |
+| `GET /v1/tlds`             | none    | `200`, `[TLD]`, default first                                                     | none                                                           |
+| `PUT /v1/tlds/{name}`      | `{"mdns": true}` | `201` if added, `200` if already served; `[TLD]`. Only `local` with `mdns` (experimental, see [mdns.md](mdns.md)) | `400` for any other TLD, `local` without `mdns`, or a bad body |
+| `DELETE /v1/tlds/{name}`   | none    | `200`, `[TLD]`                                                                    | `400` for the default TLD; `404` if not configured; `409` while routes use it |
 | `GET /v1/status`           | none    | `200`, `Status`                                                                   | none                                                           |
 | `GET /v1/events`           | none    | `200`, `text/event-stream`                                                        | none                                                           |
 
@@ -67,6 +71,14 @@ the proxy is rolled back and the request returns `500`.
 {"name": "shop.test", "port": 3000, "wildcard": false, "redirect_https": true, "health": "up", "source": "file", "file": "/home/me/shop/switchboard.toml"}
 {"name": "web.test", "port": 8080, "wildcard": false, "redirect_https": true, "health": "up", "source": "docker", "container": "web"}
 
+// Under an mDNS TLD (experimental), RouteStatus also has
+// mdns: "announced" | "pending" (not yet, or failing; see Status.mdns.error) | "wildcard" (can't be announced)
+{"name": "myapp.local", "port": 7000, "wildcard": false, "redirect_https": true, "health": "up", "source": "config", "mdns": "announced"}
+
+// TLD
+{"name": "test", "default": true}
+{"name": "local", "mdns": true}
+
 // AccessLog: one proxied request; the query string is never stored
 {"time": "2026-09-25T10:00:00Z", "host": "a.myapp.test", "method": "GET", "path": "/", "status": 200, "duration_ms": 12.5}
 
@@ -84,7 +96,10 @@ the proxy is rolled back and the request returns `500`.
 {
   "version": "v0.1.0",
   "uptime_seconds": 42,
-  "tlds": ["test"],
+  "tlds": ["test"],   // every served TLD, default first; "local" once .local mode is on
+  "mdns": {"enabled": false, "experimental": true, "tlds": [], "announced": 0},
+  // with .local mode on: {"enabled": true, "experimental": true, "tlds": ["local"],
+  //   "backend": "go", "interface": "loopback", "announced": 2, "error": "..." (if failing)}
   "dns":   {"addrs": ["127.0.0.1:15353"], "listening": true},
   "proxy": {"addrs": ["127.0.0.1:80", "[::1]:80"], "listening": false,
             "error": "proxy: listen 127.0.0.1:80: bind: permission denied; ..."},
@@ -113,8 +128,9 @@ data: {"type":"route.added","route":{"name":"myapp.test","port":7000,...,"health
 ```
 
 The event types are `route.added`, `route.updated`, `route.removed`,
-`health.changed`, and `paused.changed` (which has `"paused": true|false` and an empty
-`route`). A `health.changed` event is sent once for each route on the port
+`health.changed`, `paused.changed` (which has `"paused": true|false` and an empty
+`route`), `tlds.changed` (after `PUT` or `DELETE /v1/tlds`) and `mdns.changed` (the
+.local announcer's state changed; both have an empty `route`, so reload `GET /v1/status`). A `health.changed` event is sent once for each route on the port
 whose health changed. A client that falls more than 32 events behind loses events
 rather than slowing down route changes, so reload `GET /v1/status` after reconnecting.
 

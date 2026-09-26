@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nanaaikinson/switchboard/internal/config"
+	"github.com/nanaaikinson/switchboard/internal/mdns"
 	"github.com/nanaaikinson/switchboard/internal/proxy"
 )
 
@@ -26,10 +27,12 @@ type RouteSetter interface {
 
 // Options configures a Service.
 type Options struct {
-	ConfigPath     string         // routes.toml; every change is saved here
-	Config         *config.Config // loaded config; routes are served immediately
-	Proxy          RouteSetter
-	TLDs           []string // first entry is appended to unqualified names
+	ConfigPath string         // routes.toml; every change is saved here
+	Config     *config.Config // loaded config; routes are served immediately
+	Proxy      RouteSetter
+	// TLDs are served through split DNS; the first entry is appended to
+	// unqualified names. Opt-in mDNS TLDs come from Config.TLDs.
+	TLDs           []string
 	Version        string
 	HealthInterval time.Duration // 0 means DefaultHealthInterval
 	// Reserved names can't be routes, e.g. the dashboard's switchboard.<tld>.
@@ -41,6 +44,14 @@ type Options struct {
 	CA func() CAInfo
 	// Pause turns every route off (true) or back on; nil can't pause.
 	Pause func(paused bool)
+	// MDNS announces routes under mDNS TLDs; nil means they can't be.
+	MDNS Announcer
+}
+
+// Announcer announces names over mDNS. *mdns.Announcer satisfies it.
+type Announcer interface {
+	Update(enabled bool, names []string)
+	State() mdns.State
 }
 
 // Service owns the route table: it validates changes, persists them, pushes
@@ -52,6 +63,7 @@ type Service struct {
 	health  *checker
 
 	mu           sync.Mutex     // serializes route changes
+	tlds         []config.TLD   // opt-in TLDs from routes.toml
 	routes       []config.Route // from routes.toml
 	docker       []DockerRoute  // from running containers
 	active       []DockerRoute  // the Docker routes served: those not clashing with routes
@@ -73,12 +85,14 @@ func NewService(opts Options) (*Service, error) {
 	if len(opts.TLDs) == 0 {
 		return nil, errors.New("api: at least one TLD is required")
 	}
-	s := &Service{opts: opts, started: time.Now(), hub: newHub(), routes: slices.Clone(opts.Config.Routes)}
+	s := &Service{opts: opts, started: time.Now(), hub: newHub(),
+		tlds: slices.Clone(opts.Config.TLDs), routes: slices.Clone(opts.Config.Routes)}
 	s.health = newChecker(opts.HealthInterval, s.healthChanged)
 	if err := opts.Proxy.SetRoutes(s.routes); err != nil {
 		return nil, fmt.Errorf("api: load routes: %w", err)
 	}
 	s.health.track(ports(s.routes))
+	s.announce()
 	return s, nil
 }
 
@@ -104,7 +118,9 @@ func (s *Service) Routes() []RouteStatus {
 		out = append(out, s.withHealth(r))
 	}
 	for _, d := range s.active {
-		out = append(out, dockerStatus(d, s.health.health(d.Port)))
+		rs := dockerStatus(d, s.health.health(d.Port))
+		rs.MDNS = s.routeMDNS(d.Name)
+		out = append(out, rs)
 	}
 	return out
 }
@@ -118,11 +134,13 @@ func (s *Service) Status() Status {
 	docker := s.dockerStatus
 	docker.Skipped = slices.Concat(docker.Skipped, s.conflicts)
 	paused := s.paused
+	tlds, mdnsStatus := s.tldNames(), s.mdnsStatus()
 	s.mu.Unlock()
 	return Status{
 		Version:       s.opts.Version,
 		UptimeSeconds: int64(time.Since(s.started).Seconds()),
-		TLDs:          slices.Clone(s.opts.TLDs),
+		TLDs:          tlds,
+		MDNS:          mdnsStatus,
 		DNS:           dns,
 		Proxy:         proxy,
 		HTTPS:         https,
@@ -135,7 +153,10 @@ func (s *Service) Status() Status {
 // Put adds r, or replaces the route with the same name. The name is qualified
 // with the default TLD first. It reports whether the route is new.
 func (s *Service) Put(r config.Route) (RouteStatus, bool, error) {
-	r.Name = config.QualifyName(r.Name, s.opts.TLDs)
+	if err := s.checkLocal(r.Name); err != nil {
+		return RouteStatus{}, false, err
+	}
+	r.Name = s.qualify(r.Name)
 	r.File = "" // routes from files are managed with Apply
 	if !config.ValidHostname(r.Name) {
 		return RouteStatus{}, false, fmt.Errorf("%w: name %q must be a hostname like myapp or *.myapp", ErrInvalid, r.Name)
@@ -172,7 +193,7 @@ func (s *Service) Put(r config.Route) (RouteStatus, bool, error) {
 // Delete removes the route called name (qualified with the default TLD) and
 // returns it.
 func (s *Service) Delete(name string) (config.Route, error) {
-	name = config.QualifyName(name, s.opts.TLDs)
+	name = s.qualify(name)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	i := slices.IndexFunc(s.routes, func(x config.Route) bool { return x.Name == name })
@@ -203,8 +224,7 @@ func (s *Service) commit(next []config.Route) error {
 	if err := s.opts.Proxy.SetRoutes(all); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
-	cfg := &config.Config{SchemaVersion: config.SchemaVersion, Routes: next}
-	if err := config.Save(s.opts.ConfigPath, cfg); err != nil {
+	if err := s.save(s.tlds, next); err != nil {
 		prev, _, _ := s.merge(s.routes, s.docker)
 		if rerr := s.opts.Proxy.SetRoutes(prev); rerr != nil {
 			return fmt.Errorf("%w (and restoring the previous routes failed: %w)", err, rerr)
@@ -215,15 +235,22 @@ func (s *Service) commit(next []config.Route) error {
 	s.routes, s.active, s.conflicts = next, active, conflicts
 	s.health.track(ports(all))
 	s.publishDockerDiff(old, active)
+	s.announce()
 	return nil
 }
 
+// save writes tlds and routes to routes.toml.
+func (s *Service) save(tlds []config.TLD, routes []config.Route) error {
+	return config.Save(s.opts.ConfigPath, &config.Config{SchemaVersion: config.SchemaVersion, TLDs: tlds, Routes: routes})
+}
+
+// withHealth adds r's health, source and mDNS state. Caller holds s.mu.
 func (s *Service) withHealth(r config.Route) RouteStatus {
 	src := SourceConfig
 	if r.File != "" {
 		src = SourceFile
 	}
-	return RouteStatus{Route: r, Health: s.health.health(r.Port), Source: src}
+	return RouteStatus{Route: r, Health: s.health.health(r.Port), Source: src, MDNS: s.routeMDNS(r.Name)}
 }
 
 // healthChanged publishes one event per route on the port.
@@ -271,7 +298,7 @@ func (s *Service) checkReserved(r config.Route) error {
 // Logs returns the recent requests to the route called name (qualified with
 // the default TLD), oldest first.
 func (s *Service) Logs(name string) ([]proxy.AccessLog, error) {
-	name = config.QualifyName(name, s.opts.TLDs)
+	name = s.qualify(name)
 	s.mu.Lock()
 	known := slices.ContainsFunc(s.routes, func(r config.Route) bool { return r.Name == name }) ||
 		slices.ContainsFunc(s.active, func(d DockerRoute) bool { return d.Name == name })

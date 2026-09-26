@@ -25,6 +25,21 @@ pub struct RouteStatus {
     pub source: String,
     #[serde(default)]
     pub container: Option<String>,
+    /// Set for routes under .local (experimental mDNS mode): "announced",
+    /// "pending" or "wildcard".
+    #[serde(default)]
+    pub mdns: Option<String>,
+}
+
+impl RouteStatus {
+    /// A menu note for routes under .local, which is experimental.
+    pub fn mdns_note(&self) -> &'static str {
+        match self.mdns.as_deref() {
+            None => "",
+            Some("wildcard") => "  (.local: not on mDNS)",
+            Some(_) => "  (.local, experimental)",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -269,6 +284,23 @@ pub fn drain_event_types(buf: &mut String) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mdns_note_marks_local_routes() {
+        let route = |mdns: Option<&str>| RouteStatus {
+            name: "x".into(),
+            port: 1,
+            wildcard: false,
+            health: "up".into(),
+            source: "config".into(),
+            container: None,
+            mdns: mdns.map(Into::into),
+        };
+        assert_eq!(route(None).mdns_note(), "");
+        assert_eq!(route(Some("announced")).mdns_note(), "  (.local, experimental)");
+        assert_eq!(route(Some("pending")).mdns_note(), "  (.local, experimental)");
+        assert_eq!(route(Some("wildcard")).mdns_note(), "  (.local: not on mDNS)");
+    }
 
     fn listener(addr: &str, listening: bool) -> Listener {
         Listener {

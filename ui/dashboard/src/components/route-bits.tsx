@@ -1,5 +1,5 @@
 import { Lock, LockOpen } from "lucide-react";
-import { certNames, type Health, type HTTPSState, type RouteStatus } from "@/lib/api";
+import { certNames, type Health, type HTTPSState, type MDNSState, type RouteStatus } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -103,6 +103,39 @@ export function HTTPSLock({ route, state }: { route: Pick<RouteStatus, "name" | 
             </span>
           </>
         )}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+const mdnsText: Record<MDNSState, { label: string; tip: string }> = {
+  announced: { label: "mDNS", tip: "Announced over multicast DNS on this machine only (experimental)." },
+  pending: { label: "mDNS pending", tip: "Not announced yet. If this stays, run sb doctor to see why (experimental)." },
+  wildcard: {
+    label: "not on mDNS",
+    tip: "Wildcards can't be announced over multicast DNS, so these names don't resolve. Add each .local name you need.",
+  },
+};
+
+/** How a .local route is announced over mDNS; nothing for other routes. */
+export function MDNSBadge({ route }: { route: Pick<RouteStatus, "mdns" | "wildcard"> }) {
+  if (!route.mdns) return null;
+  const { label, tip } = mdnsText[route.mdns];
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge
+          variant={route.mdns === "announced" ? "secondary" : "outline"}
+          data-mdns={route.mdns}
+          tabIndex={0}
+          className={cn("ml-2 cursor-default", route.mdns === "wildcard" && "text-warning")}
+        >
+          {label}
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-64">
+        {tip}
+        {route.wildcard && route.mdns !== "wildcard" && " Its subdomains aren't announced."}
       </TooltipContent>
     </Tooltip>
   );

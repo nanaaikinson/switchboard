@@ -258,6 +258,11 @@ func (p *Platform) HelperRunning(context.Context) error {
 	return fmt.Errorf("Windows needs no helper: the daemon binds its ports itself (%w)", errors.ErrUnsupported) //nolint:staticcheck // ST1005: starts with a proper noun
 }
 
+// CheckLocalDNS is not implemented on Windows yet.
+func (p *Platform) CheckLocalDNS(context.Context) error {
+	return fmt.Errorf("checking where .local lookups go is %w on Windows", errors.ErrUnsupported)
+}
+
 // CheckResolver reports whether Switchboard's NRPT rule for tld is in place.
 func (p *Platform) CheckResolver(tld string, port int) error {
 	if port != 53 {

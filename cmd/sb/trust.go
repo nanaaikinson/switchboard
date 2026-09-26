@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nanaaikinson/switchboard/internal/config"
 	"github.com/nanaaikinson/switchboard/internal/dns"
 	"github.com/nanaaikinson/switchboard/internal/pki"
 	"github.com/nanaaikinson/switchboard/internal/platform"
@@ -21,7 +22,21 @@ func ensureCA() (*pki.CA, error) {
 	if err != nil {
 		return nil, err
 	}
-	return pki.LoadOrCreate(dir, dns.DefaultTLDs())
+	return pki.LoadOrCreate(dir, caTLDs())
+}
+
+// caTLDs are the TLDs a new CA is limited to: the default ones, plus opt-in
+// TLDs such as .local from routes.toml.
+func caTLDs() []string {
+	tlds := dns.DefaultTLDs()
+	if path, err := config.DefaultPath(); err == nil {
+		if cfg, err := config.Load(path); err == nil {
+			for _, t := range cfg.TLDs {
+				tlds = append(tlds, t.Name)
+			}
+		}
+	}
+	return tlds
 }
 
 // existingCACert returns the CA certificate path, or "" if there is no CA.

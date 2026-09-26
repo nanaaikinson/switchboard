@@ -19,7 +19,10 @@ func (s *Service) Apply(req ApplyRequest) (ApplyResult, error) {
 	}
 	want := make([]config.Route, 0, len(req.Routes))
 	for _, r := range req.Routes {
-		r.Name = config.QualifyName(r.Name, s.opts.TLDs)
+		if err := s.checkLocal(r.Name); err != nil {
+			return ApplyResult{}, err
+		}
+		r.Name = s.qualify(r.Name)
 		r.File = req.File
 		if !config.ValidHostname(r.Name) {
 			return ApplyResult{}, fmt.Errorf("%w: name %q must be a hostname like myapp or *.myapp", ErrInvalid, r.Name)

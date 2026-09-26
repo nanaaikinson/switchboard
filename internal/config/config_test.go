@@ -23,6 +23,9 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 			{Name: "api.myapp.test", Port: 7001},
 			{Name: "tenants.myapp.test", Port: 3000, Wildcard: true, RedirectHTTPS: true},
 		}}},
+		{"mdns tld", &Config{SchemaVersion: SchemaVersion, TLDs: []TLD{{Name: "local", MDNS: true}}, Routes: []Route{
+			{Name: "myapp.local", Port: 7000},
+		}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -124,6 +127,13 @@ port = 7000
 		{name: "negative schema_version", content: "schema_version = -1\n", wantErr: "invalid schema_version"},
 		{name: "newer schema_version", content: "schema_version = 2\n", wantErr: "upgrade sb"},
 		{name: "malformed toml", content: "schema_version = \n", wantErr: "parse config"},
+		{
+			name:    "mdns tld",
+			content: "schema_version = 1\n[[tlds]]\nname = \"local\"\nmdns = true\n",
+			want:    &Config{SchemaVersion: 1, TLDs: []TLD{{Name: "local", MDNS: true}}, Routes: []Route{}},
+		},
+		{name: "unicast tld", content: "schema_version = 1\n[[tlds]]\nname = \"dev\"\n", wantErr: `only "local"`},
+		{name: "local without mdns", content: "schema_version = 1\n[[tlds]]\nname = \"local\"\n", wantErr: "needs mdns = true"},
 		{name: "unknown top-level key", content: "schema_version = 1\ntld = \"test\"\n", wantErr: "unknown keys tld"},
 		{
 			name: "unknown route key",
@@ -169,12 +179,17 @@ port = 0
 }
 
 func TestValidate(t *testing.T) {
+	local := TLD{Name: "local", MDNS: true}
 	tests := []struct {
 		name    string
+		tlds    []TLD
 		routes  []Route
 		wantErr string
 	}{
 		{name: "ok", routes: []Route{{Name: "a.test", Port: 1}, {Name: "b.test", Port: 65535}}},
+		{name: "mdns tld", tlds: []TLD{local}},
+		{name: "duplicate tld", tlds: []TLD{local, local}, wantErr: "more than once"},
+		{name: "other mdns tld", tlds: []TLD{{Name: "lan", MDNS: true}}, wantErr: `only "local"`},
 		{name: "empty name", routes: []Route{{Name: " ", Port: 80}}, wantErr: "name is empty"},
 		{name: "port zero", routes: []Route{{Name: "a.test", Port: 0}}, wantErr: "out of range"},
 		{name: "port too high", routes: []Route{{Name: "a.test", Port: 65536}}, wantErr: "out of range"},
@@ -183,7 +198,7 @@ func TestValidate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := (&Config{SchemaVersion: SchemaVersion, Routes: tt.routes}).Validate()
+			err := (&Config{SchemaVersion: SchemaVersion, TLDs: tt.tlds, Routes: tt.routes}).Validate()
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)

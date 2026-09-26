@@ -23,6 +23,7 @@ import (
 	"github.com/nanaaikinson/switchboard/internal/dashboard"
 	"github.com/nanaaikinson/switchboard/internal/dns"
 	"github.com/nanaaikinson/switchboard/internal/docker"
+	"github.com/nanaaikinson/switchboard/internal/mdns"
 	"github.com/nanaaikinson/switchboard/internal/pki"
 	"github.com/nanaaikinson/switchboard/internal/platform"
 	"github.com/nanaaikinson/switchboard/internal/proxy"
@@ -38,6 +39,8 @@ type daemonOptions struct {
 	// dockerConnect discovers containers; nil disables Docker routes.
 	dockerConnect func(context.Context) (docker.Client, string, error)
 	ready         func() // called once the control socket is accepting; for tests
+	// mdnsBackends announce .local names; nil means this OS's backends.
+	mdnsBackends []mdns.Backend
 }
 
 func newDaemonCmd() *cobra.Command {
@@ -66,7 +69,10 @@ With --docker (the default), running containers that publish a TCP port get
 routes too: <container>.<tld>, or <service>.<project>.<tld> for Compose. They
 are never saved to routes.toml. The daemon finds Docker through DOCKER_HOST,
 else the Docker, OrbStack, Colima, Rancher Desktop and Podman default sockets,
-and retries quietly every 10 seconds while none is running. See 'sb ls'.`,
+and retries quietly every 10 seconds while none is running. See 'sb ls'.
+
+After 'sb tld add local --mdns' (experimental), routes under .local are
+announced over multicast DNS on the loopback interface; see 'sb tld'.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if useDocker {
@@ -96,7 +102,11 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 	if err != nil {
 		return err
 	}
-	tlds := dns.DefaultTLDs()
+	tlds := dns.DefaultTLDs() // served through split DNS
+	caTLDs := slices.Clone(tlds)
+	for _, t := range cfg.TLDs {
+		caTLDs = append(caTLDs, t.Name) // a new CA covers opt-in TLDs too
+	}
 
 	px, err := proxy.New(cfg.Routes)
 	if err != nil {
@@ -107,8 +117,13 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 		dashHosts[i] = dashboard.Host(t)
 	}
 	// The CA comes first: the API reports on it. Without one, HTTPS stays off.
-	issuer, ca, caErr := newIssuer(tlds, px)
+	issuer, ca, caErr := newIssuer(caTLDs, px)
 	hosts := &hostsSyncer{Proxy: px, next: make(chan []config.Route, 1), extra: dashHosts}
+	backends := opts.mdnsBackends
+	if backends == nil {
+		backends = mdnsBackends()
+	}
+	announcer := mdns.NewAnnouncer(backends...)
 	svc, err := api.NewService(api.Options{
 		ConfigPath: cfgPath, Config: cfg, Proxy: hosts, TLDs: tlds,
 		Version: version, HealthInterval: opts.healthInterval,
@@ -116,10 +131,12 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 		Logs:     px.Logs,
 		CA:       func() api.CAInfo { return caInfo(ca, issuer, caErr, dashHosts[0]) },
 		Pause:    px.SetPaused,
+		MDNS:     announcer,
 	})
 	if err != nil {
 		return err
 	}
+	announcer.OnChange = func(mdns.State) { svc.MDNSChanged() }
 	dash := dashboard.New(api.Handler(svc), webui.Assets())
 	// The control socket also mints dashboard logins; the dashboard itself can't.
 	control := http.NewServeMux()
@@ -141,6 +158,7 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 	var wg sync.WaitGroup
 	wg.Go(func() { svc.Run(ctx) })
 	wg.Go(func() { hosts.run(ctx, platform.Current()) })
+	wg.Go(func() { announcer.Run(ctx) })
 	if opts.dockerConnect != nil {
 		svc.SetDocker(api.DockerStatus{Enabled: true}, nil)
 		w := &docker.Watcher{Connect: opts.dockerConnect, TLDs: tlds, OnChange: func(st docker.State) {
@@ -378,4 +396,9 @@ func dockerStatus(st docker.State) (api.DockerStatus, []api.DockerRoute) {
 		routes[i] = api.DockerRoute{Route: r.Route, Container: r.Container}
 	}
 	return out, routes
+}
+
+// mdnsBackends are the ways this OS can announce .local names, best first.
+func mdnsBackends() []mdns.Backend {
+	return []mdns.Backend{mdns.GoResponder()}
 }

@@ -181,6 +181,41 @@ test("the subdomain option names what it matches", async ({ page }) => {
   await expect(page.getByText("This name is already a wildcard")).toBeVisible();
 });
 
+test("experimental .local mode: a banner, mDNS badges, and wildcards flagged", async ({ page, request }) => {
+  await expect(page.getByTestId("mdns-banner")).toHaveCount(0);
+  await expect(row(page, "myapp.test").locator("[data-mdns]")).toHaveCount(0);
+
+  await request.post("/__test/mdns", {
+    data: {
+      mdns: { enabled: true, tlds: ["local"], backend: "mDNSResponder", interface: "loopback", announced: 1 },
+      routes: [
+        { name: "blog.local", port: 5000, wildcard: true, redirect_https: true, health: "up", source: "config", mdns: "announced" },
+        { name: "*.tenants.local", port: 5001, wildcard: false, redirect_https: true, health: "up", source: "config", mdns: "wildcard" },
+      ],
+    },
+  });
+  const banner = page.getByTestId("mdns-banner");
+  await expect(banner).toContainText(".local mode is on (experimental)");
+  await expect(banner).toContainText("1 name is announced over mDNS via mDNSResponder, on the loopback interface only.");
+
+  await row(page, "blog.local").getByText("mDNS", { exact: true }).hover();
+  await expect(page.getByRole("tooltip")).toContainText("Its subdomains aren't announced.");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await row(page, "*.tenants.local").getByText("not on mDNS").hover();
+  await expect(page.getByRole("tooltip")).toContainText("Wildcards can't be announced over multicast DNS");
+
+  await page.getByLabel("Name").fill("shop.local");
+  await expect(page.getByText("https://shop.local", { exact: true })).toBeVisible();
+
+  await request.post("/__test/mdns", { data: { mdns: { error: "mDNSResponder: connection refused" } } });
+  await expect(banner).toContainText(".local names aren't announced (experimental)");
+  await expect(banner).toContainText("mDNSResponder: connection refused");
+
+  await page.getByRole("link", { name: "Settings" }).click();
+  await expect(page.getByTestId("tlds")).toContainText(".local · mDNS, experimental");
+});
+
 test("follows the system color scheme", async ({ page }) => {
   const bg = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
   await page.emulateMedia({ colorScheme: "light" });

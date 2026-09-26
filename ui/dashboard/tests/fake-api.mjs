@@ -33,6 +33,7 @@ function initialState() {
     },
     https: { addrs: ["127.0.0.1:443", "[::1]:443"], listening: true },
     proxy: { addrs: ["127.0.0.1:80", "[::1]:80"], listening: true },
+    mdns: { enabled: false, experimental: true, tlds: [], announced: 0 },
   };
 }
 
@@ -43,7 +44,8 @@ function status() {
   return {
     version: "v0.9.0-fake",
     uptime_seconds: 3725,
-    tlds: ["test"],
+    tlds: ["test", ...state.mdns.tlds],
+    mdns: state.mdns,
     dns: { addrs: ["127.0.0.1:15353"], listening: true },
     proxy: state.proxy,
     https: state.https,
@@ -144,6 +146,14 @@ async function handleTest(req, res, url) {
     const b = await body(req);
     state.https = { ...state.https, ...b };
     if (b.listening === false) state.proxy = { addrs: ["127.0.0.1:8080"], listening: true };
+    return send(res, 200, {});
+  }
+  if (url.pathname === "/__test/mdns") {
+    // { mdns: {...}, routes: [...] }: turns on .local mode and adds routes.
+    const b = await body(req);
+    state.mdns = { ...state.mdns, ...b.mdns };
+    state.routes.push(...(b.routes ?? []));
+    publish("mdns.changed", {});
     return send(res, 200, {});
   }
   if (url.pathname === "/__test/ca") {

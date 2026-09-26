@@ -67,6 +67,9 @@ type Platform interface {
 	// return an error matching errors.ErrUnsupported.
 	HelperRunning(ctx context.Context) error
 	CheckResolver(tld string, port int) error
+	// CheckLocalDNS reports whether the system resolver can send .local
+	// lookups to a unicast DNS server instead of keeping them on mDNS.
+	CheckLocalDNS(ctx context.Context) error
 	// LookupHost resolves host through the system resolver, as apps do.
 	LookupHost(ctx context.Context, host string) ([]string, error)
 	// PortOwner names the process listening on a TCP port, or "" if none is

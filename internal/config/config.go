@@ -34,10 +34,24 @@ type Route struct {
 	File string `toml:"file,omitempty" json:"file,omitempty"`
 }
 
+// TLD is a top-level domain served in addition to the default one.
+type TLD struct {
+	Name string `toml:"name" json:"name"` // e.g. "local", no dots
+	// MDNS resolves names under the TLD by announcing each route over
+	// multicast DNS instead of through split DNS. Experimental; only "local".
+	MDNS bool `toml:"mdns,omitempty" json:"mdns,omitempty"`
+}
+
+// MDNSTLD is the only TLD that can be served over mDNS.
+const MDNSTLD = "local"
+
 // Config is the on-disk route table.
 type Config struct {
-	SchemaVersion int     `toml:"schema_version"`
-	Routes        []Route `toml:"routes"`
+	SchemaVersion int `toml:"schema_version"`
+	// TLDs are served in addition to the default TLD. Optional; configs
+	// written before it existed have none.
+	TLDs   []TLD   `toml:"tlds,omitempty"`
+	Routes []Route `toml:"routes"`
 }
 
 // New returns an empty config at the current schema version.
@@ -164,8 +178,20 @@ func Save(path string, cfg *Config) error {
 	return nil
 }
 
-// Validate checks that every route has a name, a valid port and a unique name.
+// Validate checks that every route has a name, a valid port and a unique
+// name, and that extra TLDs are ones this build can serve.
 func (c *Config) Validate() error {
+	for _, t := range c.TLDs {
+		switch {
+		case t.Name != MDNSTLD:
+			return fmt.Errorf("tld %q: only %q (with mdns = true) can be added; remove it", t.Name, MDNSTLD)
+		case !t.MDNS:
+			return fmt.Errorf("tld %q: needs mdns = true; .%s only works over multicast DNS", t.Name, MDNSTLD)
+		}
+	}
+	if len(c.TLDs) > 1 {
+		return fmt.Errorf("tld %q: listed more than once; remove the duplicate", c.TLDs[1].Name)
+	}
 	seen := make(map[string]bool, len(c.Routes))
 	for i, r := range c.Routes {
 		if strings.TrimSpace(r.Name) == "" {
