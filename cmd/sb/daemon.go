@@ -327,13 +327,28 @@ func newIssuer(tlds []string, px proxy.Proxy, reserved []string) (*pki.Issuer, *
 			}
 			return host
 		},
-		Routed: func(host string) bool {
-			_, _, ok := px.Lookup(host)
-			return ok || slices.Contains(reserved, host)
-		},
+		Routed: routedName(px, reserved),
 	})
 	go issuer.PruneLeaves()
 	return issuer, ca, nil
+}
+
+// routedName reports whether a route or reserved host serves host exactly,
+// or through a wildcard one label below its base: a wildcard route also
+// matches deeper names, but each distinct parent of those is a new
+// certificate, so they count as unrouted and are rate-limited.
+func routedName(px proxy.Proxy, reserved []string) func(string) bool {
+	return func(host string) bool {
+		if slices.Contains(reserved, host) {
+			return true
+		}
+		r, wildcard, ok := px.Lookup(host)
+		if !ok || !wildcard {
+			return ok
+		}
+		_, parent, _ := strings.Cut(host, ".")
+		return parent == r.Name
+	}
 }
 
 // caInfo reports the CA for GET /v1/ca. Trust is checked by verifying a

@@ -266,3 +266,26 @@ func TestHostsSyncerSendsExactNames(t *testing.T) {
 		t.Fatal("syncer kept running after ErrUnsupported")
 	}
 }
+
+// Only names a route serves directly are issued without a rate limit: under
+// a wildcard route every distinct parent is a new certificate, so a page
+// looping over a.<random>.myapp.test must not get unlimited ones.
+func TestRoutedName(t *testing.T) {
+	px, err := proxy.New([]config.Route{{Name: "myapp.test", Port: 3000, Wildcard: true}, {Name: "api.test", Port: 3001}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	routed := routedName(px, []string{"switchboard.test"})
+	for host, want := range map[string]bool{
+		"api.test":            true,
+		"myapp.test":          true,
+		"x.myapp.test":        true,
+		"a.random.myapp.test": false,
+		"other.test":          false,
+		"switchboard.test":    true,
+	} {
+		if got := routed(host); got != want {
+			t.Errorf("routed(%s) = %v, want %v", host, got, want)
+		}
+	}
+}
