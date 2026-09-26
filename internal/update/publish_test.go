@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -41,19 +42,33 @@ func TestBuildManifestRoundTrip(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m, err := BuildManifest(PublishOptions{Version: "v1.4.0", BaseURL: srv.URL, PublicKey: k.pub, Rollout: 20}, []string{path})
+	pubDate := "2026-01-01T12:00:00Z"
+	m, err := BuildManifest(PublishOptions{Version: "v1.4.0", BaseURL: srv.URL, PublicKey: k.pub, Rollout: 20, PubDate: pubDate}, []string{path})
 	if err != nil {
 		t.Fatal(err)
 	}
 	a := m.Platforms["darwin-arm64"]
-	if m.Rollout() != 20 || a.URL != srv.URL+"/sb_1.4.0_darwin_arm64.tar.gz" || len(a.SHA256) != 64 {
+	if m.Rollout() != 20 || a.URL != srv.URL+"/sb_1.4.0_darwin_arm64.tar.gz" || len(a.SHA256) != 64 || m.PubDate != pubDate {
 		t.Fatalf("manifest %+v", m)
 	}
+	// Published as the release workflow does: stable.json, signed for stable.
+	body, _ := json.MarshalIndent(m, "", "  ")
+	manifest := writeSigned(t, dir, "stable.json", body, k.sign(body, ManifestComment("stable", pubDate), false), ".minisig")
+	if _, err := CheckSignedManifest(k.pub, "stable", manifest); err != nil {
+		t.Fatalf("sb-manifest -verify: %v", err)
+	}
+	if _, err := CheckSignedManifest(k.pub, "beta", manifest); err == nil {
+		t.Error("the stable manifest verified as beta")
+	}
 	// What the release publishes is exactly what the client accepts.
-	u := Updater{PublicKey: k.pub, Current: "v1.3.0", Platform: "darwin-arm64", HTTP: srv.Client()}
-	bin, err := u.Download(context.Background(), Check{Manifest: m, Asset: a})
+	u := Updater{BaseURL: srv.URL, PublicKey: k.pub, Current: "v1.3.0", Platform: "darwin-arm64", HTTP: srv.Client(), StateDir: t.TempDir()}
+	c, err := u.Check(context.Background(), "stable")
+	if err != nil || !c.Newer {
+		t.Fatalf("client rejected the published manifest: %+v, %v", c, err)
+	}
+	bin, err := u.Download(context.Background(), c)
 	if err != nil || string(bin) != "sb 1.4.0" {
-		t.Errorf("client rejected the published manifest: %q, %v", bin, err)
+		t.Errorf("client rejected the published archive: %q, %v", bin, err)
 	}
 }
 

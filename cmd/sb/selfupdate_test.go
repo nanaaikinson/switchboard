@@ -20,9 +20,11 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/blake2b"
 
+	"github.com/nanaaikinson/switchboard/internal/config"
 	"github.com/nanaaikinson/switchboard/internal/platform"
 	"github.com/nanaaikinson/switchboard/internal/update"
 )
@@ -52,13 +54,17 @@ func newSigner(t *testing.T) signer {
 
 // sign returns a base64 minisign signature file, as manifests carry it.
 func (s signer) sign(msg []byte, comment string) string {
+	return base64.StdEncoding.EncodeToString(s.signFile(msg, comment))
+}
+
+// signFile returns a minisign signature file (.minisig).
+func (s signer) signFile(msg []byte, comment string) []byte {
 	h := blake2b.Sum512(msg)
 	sig := ed25519.Sign(s.priv, h[:])
 	global := ed25519.Sign(s.priv, append(append([]byte(nil), sig...), comment...))
-	file := fmt.Sprintf("untrusted comment: test\n%s\ntrusted comment: %s\n%s\n",
+	return []byte(fmt.Sprintf("untrusted comment: test\n%s\ntrusted comment: %s\n%s\n",
 		base64.StdEncoding.EncodeToString(append(append([]byte("ED"), s.id[:]...), sig...)), comment,
-		base64.StdEncoding.EncodeToString(global))
-	return base64.StdEncoding.EncodeToString([]byte(file))
+		base64.StdEncoding.EncodeToString(global)))
 }
 
 // script is a stand-in sb that only answers --version.
@@ -92,7 +98,11 @@ func newUpdateEnv(t *testing.T, key signer, v string, binary []byte, rollout *in
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/stable.json":
-			_ = json.NewEncoder(w).Encode(e.manifest)
+			b, _ := json.Marshal(e.manifest)
+			_, _ = w.Write(b)
+		case "/stable.json.minisig":
+			b, _ := json.Marshal(e.manifest)
+			_, _ = w.Write(key.signFile(b, update.ManifestComment("stable", e.manifest.PubDate)))
 		case "/sb.tar.gz":
 			_, _ = w.Write(e.archive)
 		default:
@@ -102,7 +112,8 @@ func newUpdateEnv(t *testing.T, key signer, v string, binary []byte, rollout *in
 	t.Cleanup(srv.Close)
 	plat := runtime.GOOS + "-" + runtime.GOARCH
 	sum := sha256.Sum256(e.archive)
-	e.manifest = update.Manifest{Version: v, RolloutPercent: rollout, Platforms: map[string]update.Asset{plat: {
+	pubDate := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	e.manifest = update.Manifest{Version: v, PubDate: pubDate, RolloutPercent: rollout, Platforms: map[string]update.Asset{plat: {
 		URL: srv.URL + "/sb.tar.gz", SHA256: hex.EncodeToString(sum[:]), Signature: key.sign(e.archive, "sb "+v+" "+plat),
 	}}}
 
@@ -139,6 +150,11 @@ func TestSelfUpdateAndRollback(t *testing.T) {
 	out := mustRun(t, "self-update", "--check")
 	if !strings.Contains(out, "latest on stable: v1.1.0") || !strings.Contains(out, "An update is available") || e.current(t) != "v1.0.0" {
 		t.Fatalf("--check changed something or said:\n%s", out)
+	}
+	// The accepted manifest's date is remembered in the config dir.
+	state, _ := os.ReadFile(filepath.Join(os.Getenv(config.EnvConfigDir), update.StateFile))
+	if !strings.Contains(string(state), `"stable": "`+e.manifest.PubDate+`"`) {
+		t.Errorf("update state %s, want stable at %s", state, e.manifest.PubDate)
 	}
 	out = mustRun(t, "self-update")
 	for _, want := range []string{"Updated " + e.exe + " from v1.0.0 to v1.1.0", "sb.old", "sb rollback", "Restarted the daemon."} {
@@ -209,6 +225,18 @@ func TestSelfUpdateRefuses(t *testing.T) {
 			t.Setenv("SB_UPDATE_URL", "http://updates.example.com")
 			return e
 		}, "SB_UPDATE_URL: http://updates.example.com is not https", ""},
+		"manifest older than one already accepted": {func(t *testing.T) *updateEnv {
+			e := newUpdateEnv(t, newSigner(t), "v1.1.0", script("v1.1.0"), nil)
+			seen := time.Now().UTC().Add(-time.Second).Format(time.RFC3339) // after the served pub_date
+			state := filepath.Join(os.Getenv(config.EnvConfigDir), update.StateFile)
+			if err := os.WriteFile(state, []byte(`{"pub_dates": {"stable": "`+seen+`"}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return e
+		}, "older than one this install already accepted", ""},
+		"pre-release on stable": {func(t *testing.T) *updateEnv {
+			return newUpdateEnv(t, newSigner(t), "v1.1.0-rc.1", script("v1.1.0-rc.1"), nil)
+		}, "the stable channel offers pre-release v1.1.0-rc.1", ""},
 		"development build": {func(t *testing.T) *updateEnv {
 			e := newUpdateEnv(t, newSigner(t), "v1.1.0", script("v1.1.0"), nil)
 			version = "dev"

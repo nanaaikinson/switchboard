@@ -60,6 +60,25 @@ func BuildManifest(o PublishOptions, archives []string) (Manifest, error) {
 	return m, m.Validate()
 }
 
+// CheckSignedManifest verifies a channel manifest file and its signature
+// (<path>.minisig) exactly as sb self-update will, so a release can't publish
+// a manifest that sb would refuse. Sign it with ManifestComment as the
+// trusted comment:
+//
+//	minisign -S -m stable.json -t "sb-manifest stable <its pub_date>"
+func CheckSignedManifest(publicKey, channel, path string) (Manifest, error) {
+	pk, err := ParsePublicKey(publicKey)
+	if err != nil {
+		return Manifest{}, err
+	}
+	body, sig, err := readSigned(path, path+".minisig")
+	if err != nil {
+		return Manifest{}, err
+	}
+	m, _, err := VerifyManifest(pk, channel, body, sig)
+	return m, err
+}
+
 // TrayManifest is the Tauri updater's static JSON format, plus
 // rollout_percent, which the tray app reads itself.
 type TrayManifest struct {

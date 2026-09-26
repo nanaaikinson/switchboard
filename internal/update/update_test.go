@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/blake2b"
 )
@@ -378,20 +380,47 @@ func TestExtract(t *testing.T) {
 	}
 }
 
-// release serves a manifest and an archive for the Updater tests.
+// release serves a manifest, its signature and an archive for the Updater
+// tests, on one channel (stable unless changed).
 type release struct {
 	manifest Manifest
 	archive  []byte
 	srv      *httptest.Server
+	channel  string
+	// signManifest makes <channel>.json.minisig for the manifest's bytes;
+	// the default signs as the release workflow does. noSignature serves none.
+	signManifest func(body []byte) []byte
+	noSignature  bool
+	// tamper, if set, changes the manifest after it was signed.
+	tamper func(m *Manifest)
 }
+
+// testPubDate is the default manifests' pub_date: recent, and in the past.
+var testPubDate = time.Now().UTC().Add(-time.Hour).Truncate(time.Second).Format(time.RFC3339)
 
 func newRelease(t *testing.T, k testKey, version, platform, comment string, rollout *int) *release {
 	t.Helper()
-	r := &release{archive: tarGz(t, map[string]string{"sb_x/sb": "new sb " + version})}
+	r := &release{archive: tarGz(t, map[string]string{"sb_x/sb": "new sb " + version}), channel: "stable"}
+	r.signManifest = func(body []byte) []byte {
+		return k.sign(body, ManifestComment(r.channel, r.manifest.PubDate), false)
+	}
 	r.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch req.URL.Path {
-		case "/stable.json":
-			_ = json.NewEncoder(w).Encode(r.manifest)
+		case "/" + r.channel + ".json":
+			body := r.body(t)
+			if r.tamper != nil {
+				m := r.manifest
+				m.Platforms = maps.Clone(m.Platforms)
+				r.tamper(&m)
+				body, _ = json.Marshal(m)
+			}
+			_, _ = w.Write(body)
+		case "/" + r.channel + ".json.minisig":
+			if r.noSignature {
+				http.NotFound(w, req)
+				return
+			}
+			_, _ = w.Write(r.signManifest(r.body(t)))
 		case "/sb.tar.gz":
 			_, _ = w.Write(r.archive)
 		default:
@@ -400,11 +429,20 @@ func newRelease(t *testing.T, k testKey, version, platform, comment string, roll
 	}))
 	t.Cleanup(r.srv.Close)
 	sum := sha256.Sum256(r.archive)
-	r.manifest = Manifest{Version: version, RolloutPercent: rollout, Platforms: map[string]Asset{platform: {
+	r.manifest = Manifest{Version: version, PubDate: testPubDate, RolloutPercent: rollout, Platforms: map[string]Asset{platform: {
 		URL: r.srv.URL + "/sb.tar.gz", SHA256: hex.EncodeToString(sum[:]),
 		Signature: base64.StdEncoding.EncodeToString(k.sign(r.archive, comment, false)),
 	}}}
 	return r
+}
+
+// body is the manifest as served, and signed.
+func (r *release) body(t *testing.T) []byte {
+	b, err := json.Marshal(r.manifest)
+	if err != nil {
+		t.Error(err)
+	}
+	return b
 }
 
 func (r *release) updater(k testKey, current string) Updater {
@@ -532,6 +570,123 @@ func TestUpdaterCheckErrors(t *testing.T) {
 	r.manifest.Platforms["linux-amd64"] = a
 	if _, err := u.Check(context.Background(), "stable"); err == nil || !strings.Contains(err.Error(), "must be https") {
 		t.Errorf("http asset: %v", err)
+	}
+}
+
+func TestUpdaterRefusesBadManifests(t *testing.T) {
+	k, attacker := newKey(t), newKey(t)
+	hundred := 100
+	for name, tc := range map[string]struct {
+		edit func(r *release)
+		why  string
+	}{
+		"no signature": {func(r *release) { r.noSignature = true }, "manifest's signature: "},
+		"signed by another key": {func(r *release) {
+			r.signManifest = func(b []byte) []byte { return attacker.sign(b, ManifestComment("stable", testPubDate), false) }
+		}, "not the update key"},
+		"rollout raised after signing": {func(r *release) {
+			zero := 0
+			r.manifest.RolloutPercent = &zero
+			r.tamper = func(m *Manifest) { m.RolloutPercent = &hundred }
+		}, "doesn't match its signature"},
+		"version changed after signing": {func(r *release) {
+			r.tamper = func(m *Manifest) { m.Version = "v1.9.0" }
+		}, "doesn't match its signature"},
+		"beta manifest served as stable": {func(r *release) {
+			r.signManifest = func(b []byte) []byte { return k.sign(b, ManifestComment("beta", testPubDate), false) }
+		}, `signed as "sb-manifest beta `},
+		"pub_date isn't the signed one": {func(r *release) {
+			r.signManifest = func(b []byte) []byte { return k.sign(b, ManifestComment("stable", "2020-01-01T00:00:00Z"), false) }
+		}, `not "sb-manifest stable ` + testPubDate + `"`},
+		"a release's archive comment": {func(r *release) {
+			r.signManifest = func(b []byte) []byte { return k.sign(b, "sb v1.3.0 darwin-arm64", false) }
+		}, "signed as"},
+		"no pub_date": {func(r *release) {
+			r.manifest.PubDate = ""
+			r.signManifest = func(b []byte) []byte { return k.sign(b, ManifestComment("stable", testPubDate), false) }
+		}, "pub_date"},
+		"pub_date not RFC 3339": {func(r *release) { r.manifest.PubDate = "yesterday" }, "pub_date"},
+		"pub_date in the future": {func(r *release) {
+			r.manifest.PubDate = time.Now().Add(MaxClockSkew + time.Hour).UTC().Format(time.RFC3339)
+		}, "in the future; check this computer's clock"},
+		"pre-release on stable": {func(r *release) { r.manifest.Version = "v1.4.0-rc.1" }, "stable channel offers pre-release v1.4.0-rc.1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRelease(t, k, "v1.3.0", "darwin-arm64", "sb v1.3.0 darwin-arm64", nil)
+			tc.edit(r)
+			u := r.updater(k, "v1.2.0")
+			u.StateDir = t.TempDir()
+			_, err := u.Check(context.Background(), "stable")
+			if err == nil || !strings.Contains(err.Error(), tc.why) {
+				t.Errorf("err = %v, want one mentioning %q", err, tc.why)
+			}
+			if _, err := os.Stat(filepath.Join(u.StateDir, StateFile)); err == nil {
+				t.Error("a refused manifest's pub_date was remembered")
+			}
+		})
+	}
+}
+
+func TestUpdaterBetaOffersPreReleases(t *testing.T) {
+	k := newKey(t)
+	r := newRelease(t, k, "v1.4.0-rc.1", "darwin-arm64", "sb v1.4.0-rc.1 darwin-arm64", nil)
+	r.channel = "beta"
+	c, err := r.updater(k, "v1.3.0").Check(context.Background(), "beta")
+	if err != nil || !c.Newer {
+		t.Errorf("beta pre-release: %+v, %v", c, err)
+	}
+}
+
+func TestUpdaterRefusesOlderManifests(t *testing.T) {
+	k := newKey(t)
+	r := newRelease(t, k, "v1.3.0", "darwin-arm64", "sb v1.3.0 darwin-arm64", nil)
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	u := r.updater(k, "v1.2.0")
+	u.StateDir = filepath.Join(t.TempDir(), "cfg")
+	u.Now = func() time.Time { return now }
+	check := func(pubDate string) error {
+		r.manifest.PubDate = pubDate
+		_, err := u.Check(context.Background(), r.channel)
+		return err
+	}
+	for _, tc := range []struct {
+		pubDate, why string // why "" means accepted
+	}{
+		{"2026-09-30T12:00:00Z", ""},
+		{"2026-09-30T12:00:00Z", ""}, // the same manifest again
+		{"2026-10-01T12:30:00Z", ""}, // a little ahead of this clock
+		{"2026-09-30T12:00:00Z", "older than one this install already accepted (2026-10-01T12:30:00Z)"},
+		{"2026-10-01T12:29:59Z", "older than one"},
+		{"2026-10-01T14:00:00Z", "in the future"},
+		{"2026-10-01T12:30:00Z", ""}, // the refused future date wasn't remembered
+	} {
+		err := check(tc.pubDate)
+		if tc.why == "" && err != nil || tc.why != "" && (err == nil || !strings.Contains(err.Error(), tc.why)) {
+			t.Errorf("pub_date %s: err = %v, want %q", tc.pubDate, err, tc.why)
+		}
+	}
+	// Channels are remembered apart: beta may be ahead of stable.
+	r.channel = "beta"
+	if err := check("2026-10-01T12:40:00Z"); err != nil {
+		t.Errorf("beta: %v", err)
+	}
+	r.channel = "stable"
+	if err := check("2026-10-01T12:30:00Z"); err != nil {
+		t.Errorf("stable after a newer beta: %v", err)
+	}
+	path := filepath.Join(u.StateDir, StateFile)
+	if fi, err := os.Stat(path); err != nil || runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
+		t.Errorf("state file: %v %v", fi, err)
+	}
+	if fi, err := os.Stat(u.StateDir); err != nil || runtime.GOOS != "windows" && fi.Mode().Perm() != 0o700 {
+		t.Errorf("state dir: %v %v", fi, err)
+	}
+	// A corrupt state file starts over rather than blocking updates.
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := check("2026-09-01T00:00:00Z"); err != nil {
+		t.Errorf("after a corrupt state file: %v", err)
 	}
 }
 

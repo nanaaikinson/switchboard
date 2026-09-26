@@ -74,10 +74,13 @@ func newSelfUpdateCmd() *cobra.Command {
 this binary, keeping the current one as sb.old (undo with 'sb rollback').
 Then restart the daemon's service so it runs the new version.
 
-Every download is checked against its SHA-256 and its minisign signature,
-made with the release key built into sb, before anything is replaced. A
-release may roll out gradually: each install has a random ID (in the config
-dir, never sent anywhere) that decides when it gets the update.
+The channel's manifest must be signed with the release key built into sb,
+for that channel, and be no older than the newest one this install has
+accepted (remembered in the config dir), so an old manifest can't be served
+again. The stable channel never offers a pre-release. Every download is
+checked against its SHA-256 and its minisign signature before anything is
+replaced. A release may roll out gradually: each install has a random ID (in
+the config dir, never sent anywhere) that decides when it gets the update.
 
 sb installed with Homebrew, winget, Scoop, a .deb or .rpm, or inside the
 Switchboard app isn't updated this way; the error says what to run instead.
@@ -108,7 +111,7 @@ https URL (http only for localhost), and so must every redirect.`,
 			}
 			u := update.Updater{
 				BaseURL: base, PublicKey: update.ReleaseKey, Current: version,
-				Platform: runtime.GOOS + "-" + runtime.GOARCH, InstallID: id, HTTP: updateHTTP,
+				Platform: runtime.GOOS + "-" + runtime.GOARCH, InstallID: id, HTTP: updateHTTP, StateDir: dir,
 			}
 			ctx := cmd.Context()
 			c, err := u.Check(ctx, channel)

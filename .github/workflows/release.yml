@@ -480,9 +480,16 @@ jobs:
           # Pre-releases go to beta; releases to stable, and to beta too, so
           # beta users never lag behind stable.
           case "$TAG" in *-*) channels="beta" ;; *) channels="stable beta" ;; esac
+          key=$(mktemp) && trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          pub_date=$(jq -r .pub_date sb.json)
           mkdir -p updates/tray
           for c in $channels; do
             cp sb.json "updates/$c.json"
+            # Signed for this channel and date, which sb checks and remembers,
+            # then checked exactly as sb will (docs/updates.md).
+            minisign -S -s "$key" -m "updates/$c.json" -x "updates/$c.json.minisig" -t "sb-manifest $c $pub_date" < /dev/null
+            go run ./cmd/sb-manifest -verify "$c" "updates/$c.json"
             if [ -f tray.json ]; then cp tray.json "updates/tray/$c.json"; fi
           done
           cd updates
