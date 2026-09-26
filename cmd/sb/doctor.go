@@ -111,11 +111,15 @@ func runDoctor(ctx context.Context, p platform.Platform) []checkResult {
 		rs = append(rs, pass("daemon", fmt.Sprintf("running %s, up %s", st.Version, time.Duration(st.UptimeSeconds)*time.Second)))
 	} else {
 		detail := stErr.Error()
-		if errors.Is(stErr, client.ErrDaemonNotRunning) {
+		fix := "Re-run 'sb setup' to start it as a login service, or run 'sb daemon' in a terminal to see why it stops."
+		switch {
+		case errors.Is(stErr, client.ErrDaemonNotRunning):
 			detail = "not running"
+		case client.IsUntrusted(stErr):
+			// Another account holds the socket or pipe: restarting won't help.
+			fix = "Do what the message says; until then sb won't talk to the daemon, since whoever answers may not be yours."
 		}
-		rs = append(rs, checkResult{checkFail, "daemon", detail,
-			"Re-run 'sb setup' to start it as a login service, or run 'sb daemon' in a terminal to see why it stops."})
+		rs = append(rs, checkResult{checkFail, "daemon", detail, fix})
 	}
 
 	rs = append(rs, fromErr("helper", "running", p.HelperRunning(ctx), "Run 'sb setup'."))

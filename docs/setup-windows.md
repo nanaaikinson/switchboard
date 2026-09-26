@@ -76,6 +76,10 @@ their choice. If it refuses, it carries on with no log.
 On Windows the CLI and the daemon talk over a named pipe,
 `\\.\pipe\switchboard-<id>`, instead of a Unix socket. See [api.md](api.md). Only your
 account can open it, and the CLI refuses to talk to a pipe served by another account.
+Part of the name is random, kept in `%APPDATA%\switchboard\pipe-id`, so another account
+can't guess it and take it first. If one does anyway, the daemon won't start and
+`sb doctor` names that account; delete `pipe-id` and start the daemon again to move to
+a new name.
 
 ## Port conflicts
 
@@ -216,9 +220,12 @@ Keep a second VM snapshot, or a second VM, with IIS installed for steps 24 to 27
 29. Squatting: sign out the second user, stop your task, then as the second user
     create a pipe with your pipe's name:
     `$s = [IO.Pipes.NamedPipeServerStream]::new('switchboard-<id>', 'InOut', 10); $s.WaitForConnection()`.
-    As you, `sb ls` refuses: the pipe is served by another user. `Start-ScheduledTask`:
-    the daemon fails to claim the pipe and says why (see the task's history / `sb
-    daemon` in a terminal). Stop the second user's PowerShell; the daemon starts.
+    As you, `sb ls` refuses: the pipe is served by another user, named as
+    `DOMAIN\user (SID)`. `Start-ScheduledTask`: the daemon fails to claim the pipe and
+    says why, naming the account (see the task's history / `sb daemon` in a terminal).
+    `sb doctor`: `[FAIL] daemon: ...`, saying to delete `pipe-id`. Delete it and
+    `Start-ScheduledTask`: the daemon starts on a new pipe name while the squatter
+    still runs, and `sb ls` works.
 
 **install.ps1**
 30. Windows PowerShell 5.1:

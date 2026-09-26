@@ -20,6 +20,11 @@ import (
 // ErrDaemonNotRunning means nothing is listening on the control socket.
 var ErrDaemonNotRunning = errors.New("the Switchboard daemon is not running")
 
+// IsUntrusted reports whether err is the client refusing a control socket or
+// pipe that another user owns or could have replaced; the error says what to
+// do.
+func IsUntrusted(err error) bool { return untrusted(err) }
+
 // Client is a control API client.
 type Client struct {
 	socket string

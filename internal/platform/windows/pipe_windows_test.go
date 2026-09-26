@@ -16,7 +16,7 @@ func testPipe(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return PipeName(sid, fmt.Sprintf("%s-%d", t.Name(), time.Now().UnixNano()))
+	return PipeName(sid, fmt.Sprintf("%s-%d", t.Name(), time.Now().UnixNano()), "0123456789abcdef0123456789abcdef")
 }
 
 func TestPipeRoundTrip(t *testing.T) {

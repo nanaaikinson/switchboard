@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/Microsoft/go-winio"
 	"golang.org/x/sys/windows"
@@ -24,7 +25,8 @@ func CurrentSID() (string, error) {
 
 // ListenPipe serves the named pipe for the current user only. It fails if the
 // pipe exists already, whoever made it: winio creates the first instance
-// with FILE_FLAG_FIRST_PIPE_INSTANCE, so a squatter can't sit in front.
+// with FILE_FLAG_FIRST_PIPE_INSTANCE, so a squatter can't sit in front. When
+// another account holds the name the error wraps ErrForeignPipe and names it.
 func ListenPipe(name string) (net.Listener, error) {
 	sid, err := CurrentSID()
 	if err != nil {
@@ -33,12 +35,28 @@ func ListenPipe(name string) (net.Listener, error) {
 	ln, err := winio.ListenPipe(name, &winio.PipeConfig{SecurityDescriptor: PipeSDDL(sid)})
 	// FILE_FLAG_FIRST_PIPE_INSTANCE reports an existing pipe as access denied.
 	if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
-		return nil, fmt.Errorf("a daemon is already running on %s (or another program holds that pipe); stop it first", name)
+		return nil, whoHolds(name)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w; is another Switchboard daemon running?", name, err)
 	}
 	return ln, nil
+}
+
+// whoHolds explains why an existing pipe can't be served: our own daemon
+// runs, or another account (or a program we can't identify) made it first.
+func whoHolds(name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	c, err := DialPipe(ctx, name)
+	switch {
+	case err == nil:
+		_ = c.Close()
+		return fmt.Errorf("a daemon is already running on %s; stop it first", name)
+	case errors.Is(err, ErrForeignPipe):
+		return fmt.Errorf("can't serve %s: %w", name, err)
+	}
+	return fmt.Errorf("can't serve %s: a daemon is already running, or another program holds that pipe (%w); stop it first", name, err)
 }
 
 // DialPipe connects to the named pipe and checks that its server runs as the
@@ -48,6 +66,11 @@ func DialPipe(ctx context.Context, name string) (net.Conn, error) {
 	c, err := winio.DialPipeContext(ctx, name)
 	if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
 		return nil, fmt.Errorf("%w: %s", ErrPipeNotFound, name)
+	}
+	if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		// Our daemon's DACL always lets us in, unless it runs elevated
+		// and we don't.
+		return nil, fmt.Errorf("%s exists but refuses you: another account may have created it, or the daemon runs as administrator and this command doesn't: %w", name, err)
 	}
 	if err != nil {
 		return nil, err
@@ -64,18 +87,21 @@ func checkServerUser(c net.Conn) error {
 	if !ok {
 		return errors.New("named pipe connection has no handle")
 	}
+	h := windows.Handle(f.Fd())
 	var pid uint32
-	if err := windows.GetNamedPipeServerProcessId(windows.Handle(f.Fd()), &pid); err != nil {
+	if err := windows.GetNamedPipeServerProcessId(h, &pid); err != nil {
 		return fmt.Errorf("find the pipe's server process: %w", err)
 	}
 	proc, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 	if err != nil {
-		return fmt.Errorf("open the pipe's server process %d: %w", pid, err)
+		return fmt.Errorf("%w: its server process %d can't be inspected, so it isn't yours (owner: %s); refusing it: %w",
+			ErrForeignPipe, pid, pipeOwner(h), err)
 	}
 	defer windows.CloseHandle(proc) //nolint:errcheck // closing a query handle
 	var tok windows.Token
 	if err := windows.OpenProcessToken(proc, windows.TOKEN_QUERY, &tok); err != nil {
-		return fmt.Errorf("the pipe's server process %d runs as another user; refusing it: %w", pid, err)
+		return fmt.Errorf("%w: its server process %d runs as another user (owner: %s); refusing it: %w",
+			ErrForeignPipe, pid, pipeOwner(h), err)
 	}
 	defer tok.Close()
 	theirs, err := tok.GetTokenUser()
@@ -87,7 +113,28 @@ func checkServerUser(c net.Conn) error {
 		return err
 	}
 	if !windows.EqualSid(theirs.User.Sid, mine.User.Sid) {
-		return fmt.Errorf("the pipe is served by another user (%s), not you; refusing it", theirs.User.Sid)
+		return fmt.Errorf("%w: it is served by %s, not you; refusing it", ErrForeignPipe, account(theirs.User.Sid))
 	}
 	return nil
+}
+
+// pipeOwner names the account that owns the pipe h is connected to.
+func pipeOwner(h windows.Handle) string {
+	sd, err := windows.GetSecurityInfo(h, windows.SE_KERNEL_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return "unknown"
+	}
+	sid, _, err := sd.Owner()
+	if err != nil || sid == nil {
+		return "unknown"
+	}
+	return account(sid)
+}
+
+// account is DOMAIN\user for sid, or the SID itself if it can't be looked up.
+func account(sid *windows.SID) string {
+	if user, domain, _, err := sid.LookupAccount(""); err == nil {
+		return domain + `\` + user + " (" + sid.String() + ")"
+	}
+	return sid.String()
 }

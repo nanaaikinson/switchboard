@@ -17,12 +17,17 @@ GUI use this API. They never edit the config file or system files directly.
 - **One daemon at a time:** if a live daemon already owns the socket, a second daemon
   exits with an error. If the file is only left over from a crash, it is replaced.
 - **Windows:** a named pipe, `\\.\pipe\switchboard-<id>`, instead of the socket. `<id>`
-  is the first 8 bytes, in hex, of SHA-256 over the user's SID and the config dir, so
-  each user (and each `SWITCHBOARD_CONFIG_DIR`) gets its own pipe without the name revealing the
-  SID. Its DACL (`D:P(A;;GA;;;<your SID>)`) lets only you connect, not even
-  administrators. The daemon creates it with `FILE_FLAG_FIRST_PIPE_INSTANCE`, so it
-  can't join a pipe someone else made first. Clients check that the process serving the
-  pipe runs as the same user, and refuse otherwise.
+  is the first 8 bytes, in hex, of SHA-256 over the user's SID, the config dir and a
+  random value stored in `<config dir>\pipe-id` (created on first use by the daemon or
+  the CLI). So each user (and each `SWITCHBOARD_CONFIG_DIR`) gets its own pipe, the name
+  reveals none of them, and no other account can work the name out and create the pipe
+  before the daemon does. Its DACL (`D:P(A;;GA;;;<your SID>)`) lets only you connect,
+  not even administrators. The daemon creates it with `FILE_FLAG_FIRST_PIPE_INSTANCE`,
+  so it can't join a pipe someone else made first. Clients check that the process
+  serving the pipe runs as the same user, and refuse otherwise. If another account
+  holds the name anyway (it saw the pipe while the daemon ran), the daemon and the CLI
+  name that account, and `sb doctor` says to delete `pipe-id` so the next start picks
+  a new name.
 - **Versioning:** all paths are under `/v1`. Errors are `{"error": "<message>"}` with a
   4xx or 5xx status.
 
