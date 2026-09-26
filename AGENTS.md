@@ -13,9 +13,9 @@ with a CLI (`sb`), a web dashboard, and a Tauri tray app, for macOS, Linux and W
 ## Architecture
 
 - One Go binary, three modes: `sb daemon`, `sb <command>` (CLI), `sb helper` (privileged).
-- Daemon: route table, DNS server (127.0.0.1:15353), reverse proxy (:80/:443), local CA,
+- Daemon: route table, DNS server (127.0.0.1:535 via the helper; 15353 without it), reverse proxy (:80/:443), local CA,
   control API (JSON over HTTP on a Unix socket / Windows named pipe, versioned /v1).
-- Helper: runs as root/SYSTEM. ONLY does: bind 80/443 and pass sockets to the daemon,
+- Helper: runs as root/SYSTEM. ONLY does: bind 80/443 and the DNS port and pass sockets to the daemon,
   write/remove split-DNS config, install/remove the CA from trust stores. Nothing else.
 - CLI and GUI are clients of the control API. They never touch system files directly.
 - Proxy is built on net/http/httputil.ReverseProxy behind a Proxy interface; don't add

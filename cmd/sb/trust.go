@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -37,6 +38,80 @@ func caTLDs() []string {
 		}
 	}
 	return tlds
+}
+
+// trustTarget is the CA that 'sb trust' and 'sb setup' trust: the current
+// one or, if an earlier version made it without limiting it to TLS server
+// certificates, a new staged CA that replaces it once trusted.
+type trustTarget struct {
+	dir string
+	ca  *pki.CA
+	old *pki.CA // the CA ca replaces, or nil
+}
+
+func caToTrust() (trustTarget, error) {
+	dir, err := pki.DefaultDir()
+	if err != nil {
+		return trustTarget{}, err
+	}
+	ca, err := pki.LoadOrCreate(dir, caTLDs())
+	if err != nil || !ca.Legacy {
+		return trustTarget{dir: dir, ca: ca}, err
+	}
+	next, err := pki.Stage(dir, caTLDs())
+	if err != nil {
+		return trustTarget{}, err
+	}
+	return trustTarget{dir: dir, ca: next, old: ca}, nil
+}
+
+// notes describe the CA for confirmation prompts.
+func (t trustTarget) notes() string {
+	notes := caSummary(t.ca)
+	if t.old != nil {
+		notes += "\nIt replaces your current CA (SHA-256 " + t.old.Fingerprint() + "), which an earlier version made without limiting it to TLS server certificates; that one is removed."
+	}
+	return notes
+}
+
+// helperArgs are the helper flags that name the CA to trust.
+func (t trustTarget) helperArgs() []string {
+	return []string{"--ca-cert", t.ca.CertPath(), "--ca-fingerprint", t.ca.Fingerprint()}
+}
+
+// finish runs once the system trusts t.ca: it replaces the old CA's files
+// with the new one's and restarts the daemon to sign with it, then trusts
+// the CA in the user's NSS stores.
+func (t trustTarget) finish(cmd *cobra.Command, p platform.Platform) error {
+	if t.old != nil {
+		untrustNSS(cmd, p, t.old.CertPath())
+		if err := pki.Promote(t.dir); err != nil {
+			return fmt.Errorf("%w; run 'sb trust' again", err)
+		}
+		trustNSS(cmd, p, pki.CertPath(t.dir))
+		// Until it restarts, the daemon signs with the old CA, which is no
+		// longer trusted.
+		restarted, err := p.RestartDaemon()
+		switch {
+		case err != nil:
+			return fmt.Errorf("the new CA is trusted, but restarting the daemon failed: %w; run 'sb setup' to restart it, so HTTPS uses the new CA", err)
+		case !restarted:
+			fmt.Fprintln(cmd.OutOrStdout(), "Restart 'sb daemon' so HTTPS uses the new CA.")
+		}
+		return nil
+	}
+	trustNSS(cmd, p, pki.CertPath(t.dir))
+	return nil
+}
+
+// helperUserArgs are the helper flags that name the user a privileged change
+// is for.
+func helperUserArgs(o platform.Options) []string {
+	args := []string{"--uid", strconv.Itoa(o.UID), "--user", o.User}
+	if o.SID != "" {
+		args = append(args, "--sid", o.SID)
+	}
+	return args
 }
 
 // existingCACert returns the CA certificate path, or "" if there is no CA.
@@ -98,18 +173,19 @@ sb trust again after 'sb untrust' or after installing a browser.`,
 				return errors.New("run 'sb trust' as your normal user, not with sudo; it asks for your password once")
 			}
 			p, opts := currentPlatform()
-			ca, err := ensureCA()
+			target, err := caToTrust()
 			if err != nil {
 				return fmt.Errorf("trust: %w", err)
 			}
-			plan := p.TrustPlan(ca.CertPath())
+			plan := p.TrustPlan(target.ca.CertPath())
 			if len(plan) == 0 {
-				return fmt.Errorf("trusting the CA is not implemented on %s yet; add %s to your trust store by hand", runtime.GOOS, ca.CertPath())
+				return fmt.Errorf("trusting the CA is not implemented on %s yet; add %s to your trust store by hand", runtime.GOOS, target.ca.CertPath())
 			}
-			argv := []string{opts.SbPath, "helper", "trust", "--ca-cert", ca.CertPath()}
+			argv := append([]string{opts.SbPath, "helper", "trust"}, target.helperArgs()...)
+			argv = append(argv, helperUserArgs(opts)...)
 			ran, err := runPrivileged(cmd, p, f, privPlan{
 				Title: "sb trust will:", Changes: plan, Command: argv,
-				Notes:  caSummary(ca) + "\nUndo with 'sb untrust'.",
+				Notes:  target.notes() + "\nUndo with 'sb untrust'.",
 				Prompt: "Switchboard wants to trust its local certificate authority for HTTPS.",
 			})
 			if err != nil {
@@ -118,7 +194,9 @@ sb trust again after 'sb untrust' or after installing a browser.`,
 			if !ran {
 				return nil
 			}
-			trustNSS(cmd, p, ca.CertPath())
+			if err := target.finish(cmd, p); err != nil {
+				return fmt.Errorf("trust: %w", err)
+			}
 			fmt.Fprintln(cmd.OutOrStdout(), "The Switchboard CA is trusted. Restart Firefox if it is open.")
 			return nil
 		},
@@ -133,9 +211,10 @@ func newUntrustCmd() *cobra.Command {
 		Use:   "untrust",
 		Short: "Stop trusting Switchboard's local CA",
 		Long: `Remove the local CA from the system trust store (with a single
-'sudo sb helper untrust') and from your Firefox stores. The CA files in the
-config dir are kept, so 'sb trust' can trust the same CA again. HTTPS names
-show certificate warnings until then.`,
+'sudo sb helper untrust') and from your Firefox stores. Any other Switchboard
+CA of yours in the system store is removed too, even if its files are gone.
+The CA files in the config dir are kept, so 'sb trust' can trust the same CA
+again. HTTPS names show certificate warnings until then.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if os.Geteuid() == 0 {
@@ -146,15 +225,15 @@ show certificate warnings until then.`,
 			if err != nil {
 				return fmt.Errorf("untrust: %w", err)
 			}
-			if path == "" {
-				fmt.Fprintln(cmd.OutOrStdout(), "There is no Switchboard CA, so nothing is trusted.")
-				return nil
-			}
 			plan := p.UntrustPlan(path)
 			if len(plan) == 0 {
 				return fmt.Errorf("untrusting the CA is not implemented on %s yet; remove %s from your trust store by hand", runtime.GOOS, path)
 			}
-			argv := []string{opts.SbPath, "helper", "untrust", "--ca-cert", path}
+			argv := []string{opts.SbPath, "helper", "untrust"}
+			if path != "" {
+				argv = append(argv, "--ca-cert", path)
+			}
+			argv = append(argv, helperUserArgs(opts)...)
 			ran, err := runPrivileged(cmd, p, f, privPlan{
 				Title: "sb untrust will:", Changes: plan, Command: argv,
 				Notes:  "Trust it again later with 'sb trust'.",
@@ -166,7 +245,9 @@ show certificate warnings until then.`,
 			if !ran {
 				return nil
 			}
-			untrustNSS(cmd, p, path)
+			if path != "" {
+				untrustNSS(cmd, p, path)
+			}
 			fmt.Fprintln(cmd.OutOrStdout(), "The Switchboard CA is no longer trusted.")
 			return nil
 		},

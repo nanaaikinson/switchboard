@@ -33,13 +33,13 @@ The drop-ins:
 ```ini
 # Managed by Switchboard; removed by 'sb uninstall'
 [Resolve]
-DNS=127.0.0.1:15353
+DNS=127.0.0.1:535
 Domains=~test
 ```
 
 ```
 # Managed by Switchboard; removed by 'sb uninstall'
-server=/test/127.0.0.1#15353
+server=/test/127.0.0.1#535
 ```
 
 `Domains=~test` makes `.test` a routing-only domain, so only `.test` lookups go to
@@ -98,8 +98,12 @@ Everything in the [macOS security design](setup-macos.md#security-design) applie
 - only you can connect to its socket (0600, chowned to you);
 - the root service runs a root-owned copy of `sb`;
 - root writes into your home only below real directories you own (`~/.config`,
-  `~/.config/systemd`, `~/.config/systemd/user` are each checked);
-- root only trusts a name-constrained Switchboard CA.
+  `~/.config/systemd`, `~/.config/systemd/user` are each checked), and only through a
+  handle on your home (`os.Root`), so a directory swapped for a symlink can't send the
+  unit file into `/etc/systemd/system`;
+- root only trusts a name-constrained Switchboard CA, made by you, with the fingerprint
+  you confirmed; its anchor file is named `switchboard-<serial>`, never after anything
+  in the certificate.
 
 On top of that, the helper's unit is sandboxed to exactly what it does:
 

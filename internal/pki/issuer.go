@@ -1,6 +1,7 @@
 package pki
 
 import (
+	"container/list"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -10,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -20,16 +22,47 @@ import (
 	"github.com/nanaaikinson/switchboard/internal/config"
 )
 
+// Limits on what any client that can reach the HTTPS port, such as a web page
+// looping over random names, can make the issuer do.
+const (
+	// maxCached is how many leaves are kept in memory; the least recently
+	// used go first.
+	maxCached = 512
+	// Leaves for names no route serves are only kept in memory, and at most
+	// unroutedBurst are issued at once, then one per unroutedEvery.
+	unroutedBurst = 16
+	unroutedEvery = 2 * time.Second
+)
+
 // Issuer issues leaf certificates signed by the CA on demand, and caches them
-// in memory and on disk. It is safe for concurrent use.
+// in memory and, for routed names, on disk. It is safe for concurrent use.
 type Issuer struct {
 	ca      *CA
 	dir     string
 	nameFor func(host string) string
+	routed  func(host string) bool
 	now     func() time.Time
+	max     int // leaves kept in memory
 
-	mu    sync.Mutex
-	cache map[string]*tls.Certificate
+	mu       sync.Mutex
+	cache    map[string]*list.Element // of *cached, most recently used first
+	lru      *list.List
+	inflight map[string]*issuing
+	tokens   float64 // for unrouted names
+	filled   time.Time
+}
+
+type cached struct {
+	name string
+	cert *tls.Certificate
+}
+
+// issuing is a certificate being loaded or issued; others asking for the
+// same name wait for it.
+type issuing struct {
+	done chan struct{}
+	cert *tls.Certificate
+	err  error
 }
 
 // IssuerOptions configures an Issuer.
@@ -38,6 +71,11 @@ type IssuerOptions struct {
 	// name itself, or "*.<parent>" when a wildcard route covers it. Nil
 	// serves every name exactly.
 	NameFor func(host string) string
+	// Routed reports whether a route (or the dashboard) serves a TLS server
+	// name. Other names still get a certificate, so the not-found page loads
+	// over HTTPS, but it is only kept in memory and issued at a limited rate.
+	// Nil treats every name as routed.
+	Routed func(host string) bool
 	// Now is the clock; nil is time.Now. For tests.
 	Now func() time.Time
 }
@@ -49,8 +87,9 @@ func NewIssuer(ca *CA, o IssuerOptions) *Issuer {
 	}
 	return &Issuer{
 		ca: ca, dir: filepath.Join(ca.dir, leafDirName),
-		nameFor: o.NameFor, now: o.Now,
-		cache: map[string]*tls.Certificate{},
+		nameFor: o.NameFor, routed: o.Routed, now: o.Now,
+		cache: map[string]*list.Element{}, lru: list.New(), inflight: map[string]*issuing{},
+		tokens: unroutedBurst, filled: o.Now(), max: maxCached,
 	}
 }
 
@@ -69,24 +108,61 @@ func (i *Issuer) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 	if i.nameFor != nil {
 		name = i.nameFor(host)
 	}
-	return i.Certificate(name)
+	return i.certificate(name, i.routed == nil || i.routed(host))
 }
 
 // Certificate returns a valid certificate for name, which is a hostname or a
 // "*.<parent>" wildcard under the CA's TLDs. It reuses a cached certificate
 // until it has less than RenewBefore left.
 func (i *Issuer) Certificate(name string) (*tls.Certificate, error) {
+	return i.certificate(name, true)
+}
+
+// certificate returns a certificate for name. Routed names are cached on
+// disk too; others only in memory, and issued at a limited rate.
+func (i *Issuer) certificate(name string, routed bool) (*tls.Certificate, error) {
 	if err := i.checkName(name); err != nil {
 		return nil, err
 	}
 	i.mu.Lock()
-	defer i.mu.Unlock()
-	if c := i.cache[name]; c != nil && i.fresh(c.Leaf, name) {
-		return c, nil
+	if e := i.cache[name]; e != nil && i.fresh(e.Value.(*cached).cert.Leaf, name) {
+		i.lru.MoveToFront(e)
+		i.mu.Unlock()
+		return e.Value.(*cached).cert, nil
 	}
+	if w := i.inflight[name]; w != nil {
+		i.mu.Unlock()
+		<-w.done
+		return w.cert, w.err
+	}
+	w := &issuing{done: make(chan struct{})}
+	i.inflight[name] = w
+	i.mu.Unlock()
+
+	// Keys are made and signed outside the lock, so a slow name doesn't hold
+	// up handshakes for others.
+	w.cert, w.err = i.load(name, routed)
+	i.mu.Lock()
+	delete(i.inflight, name)
+	if w.err == nil {
+		i.put(name, w.cert)
+	}
+	i.mu.Unlock()
+	close(w.done)
+	return w.cert, w.err
+}
+
+// load reads name's leaf from disk or issues one.
+func (i *Issuer) load(name string, routed bool) (*tls.Certificate, error) {
 	path := i.leafPath(name)
+	if !routed {
+		if !i.takeToken() {
+			return nil, fmt.Errorf("pki: too many certificates for names without a route; add a route for %s", name)
+		}
+		c, _, err := i.issue(name)
+		return c, err
+	}
 	if c, err := i.readLeaf(path); err == nil && i.fresh(c.Leaf, name) {
-		i.cache[name] = c
 		return c, nil
 	}
 	c, pemData, err := i.issue(name)
@@ -94,10 +170,55 @@ func (i *Issuer) Certificate(name string) (*tls.Certificate, error) {
 		return nil, err
 	}
 	if err := writeLeaf(path, pemData); err != nil {
-		slog.Warn("pki: cache certificate on disk", "err", err) // still usable from memory
+		// The error names the file, so the hostname: only at debug level.
+		var pe *fs.PathError
+		if errors.As(err, &pe) {
+			err = pe.Err
+		}
+		slog.Warn("pki: could not cache a certificate on disk; it is served from memory", "err", err)
 	}
-	i.cache[name] = c
 	return c, nil
+}
+
+// put caches c for name, dropping the least recently used leaf when full.
+// The caller holds i.mu.
+func (i *Issuer) put(name string, c *tls.Certificate) {
+	if e := i.cache[name]; e != nil {
+		e.Value.(*cached).cert = c
+		i.lru.MoveToFront(e)
+		return
+	}
+	i.cache[name] = i.lru.PushFront(&cached{name: name, cert: c})
+	for i.lru.Len() > i.max {
+		old := i.lru.Remove(i.lru.Back()).(*cached)
+		delete(i.cache, old.name)
+	}
+}
+
+// takeToken reports whether a leaf for an unrouted name may be issued now.
+func (i *Issuer) takeToken() bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	now := i.now()
+	i.tokens = min(unroutedBurst, i.tokens+now.Sub(i.filled).Seconds()/unroutedEvery.Seconds())
+	i.filled = now
+	if i.tokens < 1 {
+		return false
+	}
+	i.tokens--
+	return true
+}
+
+// PruneLeaves deletes cached leaf files that are expired, due for renewal or
+// not signed by the current CA; they would be reissued anyway.
+func (i *Issuer) PruneLeaves() {
+	paths, _ := filepath.Glob(filepath.Join(i.dir, "*.pem"))
+	for _, path := range paths {
+		name := strings.Replace(strings.TrimSuffix(filepath.Base(path), ".pem"), "_wildcard", "*", 1)
+		if c, err := i.readLeaf(path); err != nil || !i.fresh(c.Leaf, name) {
+			_ = os.Remove(path)
+		}
+	}
 }
 
 func (i *Issuer) checkName(name string) error {

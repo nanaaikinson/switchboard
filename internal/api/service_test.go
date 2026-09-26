@@ -105,6 +105,8 @@ func TestPutRejectsInvalid(t *testing.T) {
 		{Name: "a.*.b", Port: 1},
 		{Name: "ok", Port: 0},
 		{Name: "ok", Port: 65536},
+		{Name: "ok", Port: 80}, // the proxy's own ports loop
+		{Name: "ok", Port: 443},
 	} {
 		if _, _, err := s.Put(r); !errors.Is(err, ErrInvalid) {
 			t.Errorf("Put(%+v) err = %v, want ErrInvalid", r, err)
@@ -112,6 +114,22 @@ func TestPutRejectsInvalid(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Error("config written despite only invalid changes")
+	}
+}
+
+// Older versions accepted routes to ports 80 and 443. They still load and
+// are served (the proxy answers 508), but can't be added again.
+func TestProxyPortsFromOldConfigStillLoad(t *testing.T) {
+	s, fp, _ := newTestService(t, config.Route{Name: "old.test", Port: 80}, config.Route{Name: "web.test", Port: 3000})
+	if got := routeNames(fp.get()); got != "old.test,web.test" {
+		t.Errorf("served = %s", got)
+	}
+	_, _, err := s.Put(config.Route{Name: "old", Port: 80})
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "loop back") {
+		t.Errorf("Put to port 80: %v", err)
+	}
+	if _, _, err := s.Put(config.Route{Name: "old", Port: 8080}); err != nil {
+		t.Errorf("moving it to another port: %v", err)
 	}
 }
 

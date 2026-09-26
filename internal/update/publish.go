@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -60,6 +61,60 @@ func BuildManifest(o PublishOptions, archives []string) (Manifest, error) {
 	return m, m.Validate()
 }
 
+// CheckSignedManifest verifies a channel manifest file and its signature
+// (<path>.minisig) exactly as sb self-update will, so a release can't publish
+// a manifest that sb would refuse. Sign it with ManifestComment as the
+// trusted comment:
+//
+//	minisign -S -m stable.json -t "sb-manifest stable <its pub_date>"
+func CheckSignedManifest(publicKey, channel, path string) (Manifest, error) {
+	pk, err := ParsePublicKey(publicKey)
+	if err != nil {
+		return Manifest{}, err
+	}
+	body, sig, err := readSigned(path, path+".minisig")
+	if err != nil {
+		return Manifest{}, err
+	}
+	m, _, err := VerifyManifest(pk, channel, body, sig)
+	return m, err
+}
+
+// CheckSignedTrayManifest verifies a tray manifest file and its signature
+// (<path>.minisig) as the tray app will: the signature must verify over the
+// file with the release key, and its trusted comment must be
+// TrayManifestComment(channel, the manifest's version). The stable channel
+// may not offer a pre-release.
+func CheckSignedTrayManifest(publicKey, channel, path string) (TrayManifest, error) {
+	pk, err := ParsePublicKey(publicKey)
+	if err != nil {
+		return TrayManifest{}, err
+	}
+	body, sig, err := readSigned(path, path+".minisig")
+	if err != nil {
+		return TrayManifest{}, err
+	}
+	comment, err := pk.Verify(body, sig)
+	if err != nil {
+		return TrayManifest{}, fmt.Errorf("the %s tray manifest: %w", channel, err)
+	}
+	var m TrayManifest
+	if err := json.Unmarshal(body, &m); err != nil {
+		return TrayManifest{}, fmt.Errorf("read the %s tray manifest: %w", channel, err)
+	}
+	if want := TrayManifestComment(channel, m.Version); comment != want {
+		return TrayManifest{}, fmt.Errorf("%w: the %s tray manifest is signed as %q, not %q", ErrBadSignature, channel, comment, want)
+	}
+	v, ok := parseVersion(m.Version)
+	if !ok {
+		return TrayManifest{}, fmt.Errorf("tray manifest: version %q is not semver", m.Version)
+	}
+	if channel == "stable" && len(v.pre) > 0 {
+		return TrayManifest{}, fmt.Errorf("tray manifest: the stable channel offers pre-release %s", m.Version)
+	}
+	return m, nil
+}
+
 // TrayManifest is the Tauri updater's static JSON format, plus
 // rollout_percent, which the tray app reads itself.
 type TrayManifest struct {
@@ -79,6 +134,9 @@ type TrayPlatform struct {
 // BuildTrayManifest makes the tray app's manifest from Tauri's updater
 // bundles (createUpdaterArtifacts), each with its .sig: Switchboard.app.tar.gz
 // (universal, so both macOS targets) and the NSIS *-setup.exe for Windows.
+// Tauri's bundle signatures don't name a version (their trusted comment is a
+// timestamp and file name), so the release also signs the manifest itself;
+// see TrayManifestComment and CheckSignedTrayManifest.
 func BuildTrayManifest(o PublishOptions, bundles []string) (TrayManifest, error) {
 	pk, err := ParsePublicKey(o.PublicKey)
 	if err != nil {

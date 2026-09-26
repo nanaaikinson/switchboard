@@ -7,8 +7,10 @@ Install sb, the Switchboard CLI, from GitHub Releases.
   $env:SB_VERSION = 'v0.1.0'; irm .../install.ps1 | iex    # pin a version
   .\install.ps1 -Global                                      # Program Files; needs an elevated shell
 
-The archive is checked against the release's SHA256SUMS. If minisign is
-installed, SHA256SUMS is also checked against its signature. This script only
+The archive is checked against the release's SHA256SUMS, and SHA256SUMS
+against its minisign signature with the release key, which needs minisign on
+PATH. Set $env:SB_INSECURE_SKIP_SIGNATURE = '1' to install without minisign,
+so without checking the signature (not recommended). This script only
 installs sb.exe and adds its folder to PATH; 'sb setup' makes the system
 changes afterwards (after one UAC prompt).
 
@@ -27,10 +29,15 @@ param(
 	[switch]$NoModifyPath
 )
 
-# Public key that signs SHA256SUMS (SHA256SUMS.minisig). Empty until releases
-# are signed; the signature check is skipped while it is empty. Keep it the
-# same as MINISIGN_PUBKEY in install.sh.
-$SbMinisignPubkey = ''
+# The release key that signs SHA256SUMS (SHA256SUMS.minisig): the "RW..." line
+# of its .pub file, the same value as the SB_UPDATE_PUBLIC_KEY repository
+# variable. Keep it the same as MINISIGN_PUBKEY in install.sh and ReleaseKey in
+# internal/update/key.go (a test checks).
+#
+# A release whose signature is missing or invalid is refused, and so is
+# installing without minisign, unless $env:SB_INSECURE_SKIP_SIGNATURE = '1'.
+# With the key emptied, only the checksum is verified, with a warning.
+$SbMinisignPubkey = 'RWTezUT5l2DDkBWjTKayvSXpwTUkehmo3D8dXmRrmdv8IX6AT94tI15d'
 $SbRepo = 'nanaaikinson/switchboard'
 
 function Write-SbInfo {
@@ -74,23 +81,41 @@ function Test-SbAdmin {
 	return ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Test-SbSignature([string]$Base, [string]$Tmp) {
-	if (-not (Get-Command minisign -ErrorAction SilentlyContinue)) {
-		Write-SbInfo 'minisign not found; skipping signature check (checksum is still verified)'
+# Find-SbMinisign returns the minisign command, or nothing.
+function Find-SbMinisign {
+	return Get-Command minisign -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+
+# Test-SbSignature checks SHA256SUMS against SHA256SUMS.minisig, and that the
+# signature's trusted comment, which is signed too, names this release, so an
+# older release's signed SHA256SUMS can't be passed off as this one's.
+function Test-SbSignature([string]$Base, [string]$Tmp, [string]$Version) {
+	if (-not $SbMinisignPubkey) {
+		Write-SbWarning 'this release is NOT signature-verified: this script has no release signing key yet. Only the SHA-256 checksum is checked, which catches a corrupt download but not a tampered release'
 		return
 	}
-	if (-not $SbMinisignPubkey) {
-		Write-SbInfo 'releases are not signed yet; skipping signature check (checksum is still verified)'
-		return
+	$minisign = Find-SbMinisign
+	if (-not $minisign) {
+		if ($env:SB_INSECURE_SKIP_SIGNATURE -eq '1') {
+			Write-SbWarning 'SB_INSECURE_SKIP_SIGNATURE=1: NOT checking the release signature. Only the SHA-256 checksum is checked, so a tampered release would be installed'
+			return
+		}
+		throw "minisign is needed to verify the release signature. Install it (scoop install minisign, or download it from https://github.com/jedisct1/minisign/releases and put minisign.exe on PATH) and re-run. To install without checking the signature, set `$env:SB_INSECURE_SKIP_SIGNATURE = '1' (not recommended)"
 	}
 	try {
 		Save-SbFile "$Base/SHA256SUMS.minisig" "$Tmp\SHA256SUMS.minisig"
 	} catch {
-		throw 'could not download SHA256SUMS.minisig; refusing to install unsigned files'
+		throw "could not download SHA256SUMS.minisig for $Version; refusing to install unsigned files"
 	}
-	& minisign -Vqm "$Tmp\SHA256SUMS" -x "$Tmp\SHA256SUMS.minisig" -P $SbMinisignPubkey
+	# -Q prints only the trusted comment.
+	$comment = & $minisign -V -Q -m "$Tmp\SHA256SUMS" -x "$Tmp\SHA256SUMS.minisig" -P $SbMinisignPubkey
 	if ($LASTEXITCODE -ne 0) {
 		throw 'SHA256SUMS signature is invalid; the release may have been tampered with. Do not install it'
+	}
+	$comment = ([string]($comment | Select-Object -First 1)).Trim()
+	$want = "switchboard $Version SHA256SUMS"
+	if ($comment -cne $want) {
+		throw "SHA256SUMS.minisig is signed as '$comment', not '$want', so it belongs to another release. Do not install it"
 	}
 	Write-SbInfo 'verified SHA256SUMS signature'
 }
@@ -146,7 +171,7 @@ function Install-Sb([bool]$ForEveryone, [bool]$KeepPath) {
 			throw "could not download SHA256SUMS for $version; refusing to install unverified files"
 		}
 
-		Test-SbSignature $base $tmp
+		Test-SbSignature $base $tmp $version
 
 		$want = $null
 		foreach ($line in Get-Content -LiteralPath "$tmp\SHA256SUMS") {

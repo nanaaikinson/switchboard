@@ -14,6 +14,7 @@ import (
 
 	"github.com/smallstep/truststore"
 
+	"github.com/nanaaikinson/switchboard/internal/dns"
 	"github.com/nanaaikinson/switchboard/internal/platform/posix"
 )
 
@@ -39,16 +40,21 @@ const DefaultHelperSocket = helperSockDir + "/helper.sock"
 // ran `sb setup`; the rest exist for tests.
 type Options struct {
 	UID    int
+	User   string // login name; "" looks it up from UID
 	Home   string
 	SbPath string
+	// Version is this sb's version: the helper reports it, and diagnostics
+	// compare the helper's with it. "" skips the comparison.
+	Version string
 
-	Root         string                                            // prefix for every system path; "" is /
-	Run          func(name string, args ...string) ([]byte, error) // nil runs the command
-	Chown        func(f *os.File, uid, gid int) error              // nil is (*os.File).Chown
-	HelperSocket string                                            // "" is DefaultHelperSocket
-	HelperAddrs  []string                                          // "" is ports 80 and 443 on 127.0.0.1 and [::1]
-	Trust        func(*x509.Certificate) error                     // nil is truststore.Install (System keychain)
-	NSS          func() (NSSStore, error)                          // nil is truststore.NewNSSTrust
+	Root          string                                            // prefix for every system path; "" is /
+	Run           func(name string, args ...string) ([]byte, error) // nil runs the command
+	Chown         func(f *os.File, uid, gid int) error              // nil is (*os.File).Chown
+	HelperSocket  string                                            // "" is DefaultHelperSocket
+	HelperAddrs   []string                                          // "" is ports 80 and 443 on 127.0.0.1 and [::1]
+	HelperDNSAddr string                                            // "" is dns.ResolverAddr
+	Trust         func(*x509.Certificate) error                     // nil is truststore.Install (System keychain)
+	NSS           func() (NSSStore, error)                          // nil is truststore.NewNSSTrust
 }
 
 // Platform implements platform.Platform for macOS.
@@ -72,6 +78,9 @@ func New(o Options) *Platform {
 	}
 	if o.HelperSocket == "" {
 		o.HelperSocket = DefaultHelperSocket
+	}
+	if o.HelperDNSAddr == "" {
+		o.HelperDNSAddr = dns.ResolverAddr
 	}
 	if len(o.HelperAddrs) == 0 {
 		o.HelperAddrs = []string{"127.0.0.1:80", "[::1]:80", "127.0.0.1:443", "[::1]:443"}
@@ -114,7 +123,7 @@ func (p *Platform) InstallPlan(tld string, dnsPort int) []string {
 	return []string{
 		fmt.Sprintf("Write %s so .%s names resolve via 127.0.0.1 port %d", resolverPath(tld), tld, dnsPort),
 		fmt.Sprintf("Copy %s to %s (owned by root, mode 0755)", p.o.SbPath, helperBinPath),
-		fmt.Sprintf("Write %s and load it: runs the helper as root at boot; it only binds ports 80 and 443 on 127.0.0.1 and [::1] and passes them to your daemon", helperPlistPath),
+		fmt.Sprintf("Write %s and load it: runs the helper as root at boot; it only binds ports 80 and 443 on 127.0.0.1 and [::1], and DNS on %s, and passes them to your daemon", helperPlistPath, p.o.HelperDNSAddr),
 		fmt.Sprintf("Write %s and load it: runs 'sb daemon' as you at login", p.agentPlist()),
 	}
 }
@@ -200,17 +209,18 @@ func (p *Platform) InstallService() error {
 		return err
 	}
 
-	if err := p.files.CheckUserDir(filepath.Join(p.o.Home, "Library")); err != nil {
+	home, err := p.files.OpenHome(p.o.Home)
+	if err != nil {
 		return err
 	}
-	agentDir := filepath.Dir(p.agentPlist())
-	if err := p.files.MkdirOwned(agentDir, gid); err != nil {
+	defer home.Close()
+	if err := home.CheckDir(filepath.Join(p.o.Home, "Library")); err != nil {
 		return err
 	}
-	if err := p.files.CheckUserDir(agentDir); err != nil {
+	if err := home.MkdirAll(filepath.Dir(p.agentPlist()), gid); err != nil {
 		return err
 	}
-	if err := p.files.WriteFile(p.agentPlist(), agentPlist(p.o.SbPath, p.agentLog()), 0o644, p.o.UID, gid); err != nil {
+	if err := home.WriteFile(p.agentPlist(), agentPlist(p.o.SbPath, p.agentLog()), 0o644, gid); err != nil {
 		return err
 	}
 	return p.reload(p.guiDomain(), DaemonLabel, p.agentPlist())
@@ -222,7 +232,7 @@ func (p *Platform) RemoveService() error {
 	var errs []error
 	errs = append(errs, p.unload(p.guiDomain(), DaemonLabel))
 	for _, f := range []string{p.agentPlist(), p.agentLog()} {
-		errs = append(errs, p.files.RemoveUserFile(f))
+		errs = append(errs, p.files.RemoveUserFile(p.o.Home, f))
 	}
 	errs = append(errs, p.unload("system", HelperLabel))
 	for _, f := range []string{helperPlistPath, helperBinPath, helperLogPath} {

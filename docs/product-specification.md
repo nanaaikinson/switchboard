@@ -112,7 +112,7 @@ Requirements are tagged P0 (v0.1–v0.2), P1 (before v1.0) or P2 (after v1.0).
 
 ### DNS
 
-- P0: Built-in DNS server on `127.0.0.1:15353` answering `*.<tld>` with `127.0.0.1` and `::1`. (Not 5353: that is the mDNS port, already bound by mDNSResponder, Avahi, browsers and media apps.)
+- P0: Built-in DNS server on `127.0.0.1:535` (a privileged port the helper binds and hands over; `127.0.0.1:15353` when the daemon binds it itself) answering `*.<tld>` with `127.0.0.1` and `::1`. (Not 5353: that is the mDNS port, already bound by mDNSResponder, Avahi, browsers and media apps.)
 - P0: Split-DNS registration: `/etc/resolver/<tld>` (macOS), systemd-resolved drop-in (Linux), NRPT rule (Windows).
 - P1: Hosts-file fallback for systems without split-DNS, exact names only.
 - P1: mDNS announcer for `.local` mode.

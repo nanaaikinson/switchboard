@@ -7,10 +7,16 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/nanaaikinson/switchboard/internal/platform"
 )
 
 // version is set at build time with -ldflags "-X main.version=v1.2.3".
 var version = "dev"
+
+// The helper reports platform.Version, and sb doctor compares it with its
+// own. Set once here: -ldflags -X has set version by the time init runs.
+func init() { platform.Version = version }
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {

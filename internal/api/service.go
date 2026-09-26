@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,7 +37,8 @@ type Options struct {
 	TLDs           []string
 	Version        string
 	HealthInterval time.Duration // 0 means DefaultHealthInterval
-	// Reserved names can't be routes, e.g. the dashboard's switchboard.<tld>.
+	// Reserved names, and every name under them, can't be routes, e.g. the
+	// dashboard's switchboard.<tld> and *.switchboard.<tld>.
 	Reserved []string
 	// Logs returns a route's recent requests; nil means none are kept.
 	Logs func(name string) []proxy.AccessLog
@@ -88,10 +91,22 @@ func NewService(opts Options) (*Service, error) {
 	s := &Service{opts: opts, started: time.Now(), hub: newHub(),
 		tlds: slices.Clone(opts.Config.TLDs), routes: slices.Clone(opts.Config.Routes)}
 	s.health = newChecker(opts.HealthInterval, s.healthChanged)
-	if err := opts.Proxy.SetRoutes(s.routes); err != nil {
+	if n := count(s.routes, func(r config.Route) bool { return s.reservedBy(r.Name) != "" }); n > 0 {
+		// Older versions only reserved the dashboard's exact name. Keep such
+		// routes in routes.toml, so nothing is lost, but never serve them.
+		slog.Warn("routes.toml has routes under the dashboard's reserved name; they are not served. Find them with 'sb ls' and remove them with 'sb rm'",
+			"count", n)
+	}
+	if n := count(s.routes, func(r config.Route) bool { return checkPort(r.Port) != nil }); n > 0 {
+		// Older versions accepted these; the proxy answers them with 508.
+		slog.Warn("routes.toml has routes to port 80 or 443, where Switchboard itself listens; they answer 508 Loop Detected. Point them at your app's port with 'sb add <name> <port>'",
+			"count", n)
+	}
+	all, _, _ := s.merge(s.routes, nil)
+	if err := opts.Proxy.SetRoutes(all); err != nil {
 		return nil, fmt.Errorf("api: load routes: %w", err)
 	}
-	s.health.track(ports(s.routes))
+	s.health.track(ports(all))
 	s.announce()
 	return s, nil
 }
@@ -164,8 +179,8 @@ func (s *Service) Put(r config.Route) (RouteStatus, bool, error) {
 	if err := s.checkReserved(r); err != nil {
 		return RouteStatus{}, false, err
 	}
-	if r.Port < 1 || r.Port > 65535 {
-		return RouteStatus{}, false, fmt.Errorf("%w: port %d out of range 1-65535", ErrInvalid, r.Port)
+	if err := checkPort(r.Port); err != nil {
+		return RouteStatus{}, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 
 	s.mu.Lock()
@@ -285,14 +300,50 @@ func ports(routes []config.Route) []int {
 	return out
 }
 
-// checkReserved rejects routes for names Switchboard itself serves.
-func (s *Service) checkReserved(r config.Route) error {
-	for _, c := range claims(r) {
-		if slices.Contains(s.opts.Reserved, c) {
-			return fmt.Errorf("%w: %s is reserved for the Switchboard dashboard", ErrInvalid, c)
-		}
+// checkPort rejects ports outside 1-65535, and the proxy's own default ports:
+// a route to one sends every request back to the proxy. The proxy detects
+// such loops itself too, since --http-addr can move it to other ports.
+func checkPort(port int) error {
+	switch {
+	case port < 1 || port > 65535:
+		return fmt.Errorf("port %d out of range 1-65535", port)
+	case port == 80 || port == 443:
+		return fmt.Errorf("port %d is where Switchboard itself listens, so the route would loop back to it; use your app's port, like 3000", port)
 	}
 	return nil
+}
+
+// checkReserved rejects routes for names Switchboard itself serves.
+func (s *Service) checkReserved(r config.Route) error {
+	if root := s.reservedBy(r.Name); root != "" {
+		return fmt.Errorf("%w: %s is reserved: %s and every name under it belong to the Switchboard dashboard; pick another name",
+			ErrInvalid, r.Name, root)
+	}
+	return nil
+}
+
+// reservedBy returns the reserved name that name (or the base of a "*.name"
+// wildcard) is, or is under; "" if none. The dashboard owns its whole subtree
+// so that no route can serve a page next to it.
+func (s *Service) reservedBy(name string) string {
+	base := strings.TrimPrefix(strings.ToLower(name), "*.")
+	for _, n := range s.opts.Reserved {
+		if base == n || under(base, n) {
+			return n
+		}
+	}
+	return ""
+}
+
+// count counts the routes for which f is true.
+func count(routes []config.Route, f func(config.Route) bool) int {
+	n := 0
+	for _, r := range routes {
+		if f(r) {
+			n++
+		}
+	}
+	return n
 }
 
 // Logs returns the recent requests to the route called name (qualified with

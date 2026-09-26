@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 )
 
 // Platform is the OS-specific functionality Switchboard needs.
@@ -38,10 +39,14 @@ type Platform interface {
 	RemoveResolver(tld string) error
 	InstallService() error
 	RemoveService() error
-	// TrustCA and UntrustCA add and remove the CA certificate at certPath in
-	// the system trust store. TrustCA refuses certificates that are not a
-	// name-constrained Switchboard CA.
-	TrustCA(certPath string) error
+	// TrustCA adds the CA certificate at certPath to the system trust store,
+	// after removing the user's older Switchboard CAs from it. It refuses
+	// anything but a Switchboard CA made by the user whose SHA-256
+	// fingerprint is fingerprint, the one the user confirmed.
+	TrustCA(certPath, fingerprint string) error
+	// UntrustCA removes every Switchboard CA the user made from the system
+	// trust store, and the CA at certPath if it is not "". It needs no CA
+	// file, so a deleted or replaced one can't leave a CA trusted.
 	UntrustCA(certPath string) error
 
 	// TrustNSS and UntrustNSS do the same for the user's NSS (Firefox)
@@ -53,6 +58,10 @@ type Platform interface {
 	// listening sockets to the user's daemon. HelperListeners is the daemon side.
 	ServeHelper(ctx context.Context) error
 	HelperListeners(ctx context.Context) ([]net.Listener, error)
+	// HelperDNS asks the helper for the DNS server's UDP and TCP sockets,
+	// bound on the privileged dns.ResolverAddr. It returns an error matching
+	// errors.ErrUnsupported where there is no helper.
+	HelperDNS(ctx context.Context) (net.PacketConn, net.Listener, error)
 	// SyncHosts asks the helper to list names in its hosts-file block, on
 	// systems where that is the split-DNS fallback. It returns an error
 	// matching errors.ErrUnsupported where split DNS never needs it.
@@ -77,10 +86,15 @@ type Platform interface {
 	PortOwner(ctx context.Context, port int) (string, error)
 }
 
+// Version is the running sb's version; cmd/sb sets it. The helper reports
+// it, and 'sb doctor' checks the helper runs the same one.
+var Version = "dev"
+
 // Options identifies the user Switchboard is installed for.
 type Options struct {
 	UID    int
 	User   string // login name; DOMAIN\name on Windows, where UID is -1
+	SID    string // Windows only: the user's SID
 	Home   string
 	SbPath string // absolute path of the sb binary the user runs
 }
@@ -90,6 +104,9 @@ func Current() Platform {
 	o := Options{UID: os.Getuid()}
 	if u, err := user.Current(); err == nil {
 		o.User = u.Username
+		if runtime.GOOS == "windows" {
+			o.SID = u.Uid
+		}
 	}
 	o.Home, _ = os.UserHomeDir()
 	if exe, err := os.Executable(); err == nil {

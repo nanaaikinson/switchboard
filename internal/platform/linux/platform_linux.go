@@ -1,7 +1,6 @@
 package linux
 
 import (
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/smallstep/truststore"
 
+	"github.com/nanaaikinson/switchboard/internal/dns"
 	"github.com/nanaaikinson/switchboard/internal/platform/posix"
 )
 
@@ -38,17 +38,22 @@ const marker = "# Managed by Switchboard; removed by 'sb uninstall'\n"
 // ran `sb setup`; the rest exist for tests.
 type Options struct {
 	UID    int
+	User   string // login name; "" looks it up from UID
 	Home   string
 	SbPath string
+	// Version is this sb's version: the helper reports it, and diagnostics
+	// compare the helper's with it. "" skips the comparison.
+	Version string
 
-	Root         string                                            // prefix for every system path; "" is /
-	Run          func(name string, args ...string) ([]byte, error) // nil runs the command
-	Chown        func(f *os.File, uid, gid int) error              // nil is (*os.File).Chown
-	HelperSocket string                                            // "" is DefaultHelperSocket
-	HelperAddrs  []string                                          // "" is ports 80 and 443 on 127.0.0.1 and [::1]
-	Trust        func(*x509.Certificate) error                     // nil is truststore.Install (system bundle)
-	Untrust      func(*x509.Certificate) error                     // nil is truststore.Uninstall (system bundle)
-	NSS          func() (posix.NSSStore, error)                    // nil is truststore.NewNSSTrust
+	Root          string                                            // prefix for every system path; "" is /
+	Run           func(name string, args ...string) ([]byte, error) // nil runs the command
+	Chown         func(f *os.File, uid, gid int) error              // nil is (*os.File).Chown
+	HelperSocket  string                                            // "" is DefaultHelperSocket
+	HelperAddrs   []string                                          // "" is ports 80 and 443 on 127.0.0.1 and [::1]
+	HelperDNSAddr string                                            // "" is dns.ResolverAddr
+	Anchors       string                                            // system CA anchor files, a %s pattern; "" is truststore.SystemTrustFilename
+	TrustCommand  []string                                          // regenerates the system CA bundle; nil is truststore.SystemTrustCommand
+	NSS           func() (posix.NSSStore, error)                    // nil is truststore.NewNSSTrust
 }
 
 // Platform implements platform.Platform for Linux with systemd.
@@ -70,14 +75,17 @@ func New(o Options) *Platform {
 	if o.HelperSocket == "" {
 		o.HelperSocket = DefaultHelperSocket
 	}
+	if o.HelperDNSAddr == "" {
+		o.HelperDNSAddr = dns.ResolverAddr
+	}
 	if len(o.HelperAddrs) == 0 {
 		o.HelperAddrs = []string{"127.0.0.1:80", "[::1]:80", "127.0.0.1:443", "[::1]:443"}
 	}
-	if o.Trust == nil {
-		o.Trust = func(c *x509.Certificate) error { return truststore.Install(c) }
+	if o.Anchors == "" {
+		o.Anchors = truststore.SystemTrustFilename
 	}
-	if o.Untrust == nil {
-		o.Untrust = func(c *x509.Certificate) error { return truststore.Uninstall(c) }
+	if o.TrustCommand == nil {
+		o.TrustCommand = truststore.SystemTrustCommand
 	}
 	if o.NSS == nil {
 		o.NSS = func() (posix.NSSStore, error) { return truststore.NewNSSTrust() }
@@ -152,7 +160,7 @@ func (p *Platform) InstallPlan(tld string, dnsPort int) []string {
 	return []string{
 		dns,
 		fmt.Sprintf("Copy %s to %s (owned by root, mode 0755)", p.o.SbPath, helperBinPath),
-		fmt.Sprintf("Write %s and start it: runs the helper as root at boot; it only binds ports 80 and 443 on 127.0.0.1 and [::1] and passes them to your daemon, and keeps the %s block up to date if there is one", helperUnitPath, hostsPath),
+		fmt.Sprintf("Write %s and start it: runs the helper as root at boot; it only binds ports 80 and 443 on 127.0.0.1 and [::1], and DNS on %s, and passes them to your daemon, and keeps the %s block up to date if there is one", helperUnitPath, p.o.HelperDNSAddr, hostsPath),
 		fmt.Sprintf("Write %s and start it in your systemd user session: runs 'sb daemon' as you", p.daemonUnit()),
 	}
 }
@@ -161,7 +169,7 @@ func (p *Platform) InstallPlan(tld string, dnsPort int) []string {
 func (p *Platform) UninstallPlan(tld string) []string {
 	return []string{
 		fmt.Sprintf("Stop, disable and remove %s", p.daemonUnit()),
-		fmt.Sprintf("Remove %s or %s (only if Switchboard wrote them) and the Switchboard block in %s", resolvedDropin(tld), dnsmasqDropin(tld), hostsPath),
+		fmt.Sprintf("Remove %s or %s (only if Switchboard wrote them; their directories too if setup made them) and the Switchboard block in %s", resolvedDropin(tld), dnsmasqDropin(tld), hostsPath),
 		fmt.Sprintf("Stop, disable and remove %s and %s", helperUnitPath, helperBinPath),
 	}
 }
@@ -169,22 +177,26 @@ func (p *Platform) UninstallPlan(tld string) []string {
 // TrustPlan lists what TrustCA and TrustNSS change.
 func (p *Platform) TrustPlan(certPath string) []string {
 	return []string{
-		fmt.Sprintf("Add %s to the system CA bundle (%s) and regenerate it", certPath, systemBundle()),
+		fmt.Sprintf("Add %s to the system CA bundle (%s), replacing any older Switchboard CA of yours, and regenerate it", certPath, p.systemBundle()),
 		"As you, not root: add it to Chrome's and Firefox's certificate databases (~/.pki/nssdb, ~/.mozilla/firefox), if certutil (libnss3-tools or nss-tools) is installed",
 	}
 }
 
 // UntrustPlan lists what UntrustCA and UntrustNSS change.
 func (p *Platform) UntrustPlan(certPath string) []string {
+	what := "every Switchboard CA of yours"
+	if certPath != "" {
+		what = certPath + " and any older Switchboard CA of yours"
+	}
 	return []string{
-		fmt.Sprintf("Remove %s from the system CA bundle (%s) and regenerate it", certPath, systemBundle()),
+		fmt.Sprintf("Remove %s from the system CA bundle (%s) and regenerate it", what, p.systemBundle()),
 		"As you, not root: remove it from Chrome's and Firefox's certificate databases",
 	}
 }
 
-func systemBundle() string {
-	if truststore.SystemTrustFilename == "" {
+func (p *Platform) systemBundle() string {
+	if p.o.Anchors == "" {
 		return "none found"
 	}
-	return filepath.Dir(truststore.SystemTrustFilename)
+	return filepath.Dir(p.o.Anchors)
 }

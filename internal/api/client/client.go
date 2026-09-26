@@ -20,6 +20,11 @@ import (
 // ErrDaemonNotRunning means nothing is listening on the control socket.
 var ErrDaemonNotRunning = errors.New("the Switchboard daemon is not running")
 
+// IsUntrusted reports whether err is the client refusing a control socket or
+// pipe that another user owns or could have replaced; the error says what to
+// do.
+func IsUntrusted(err error) bool { return untrusted(err) }
+
 // Client is a control API client.
 type Client struct {
 	socket string
@@ -147,6 +152,10 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) (int,
 		var opErr *net.OpError
 		if errors.Is(err, errNoDaemon) || errors.As(err, &opErr) && opErr.Op == "dial" {
 			return 0, fmt.Errorf("%w (no daemon on %s); start it with 'sb daemon'", ErrDaemonNotRunning, c.socket)
+		}
+		var uerr *url.Error
+		if untrusted(err) && errors.As(err, &uerr) {
+			return 0, uerr.Err // already says what's wrong and what to do
 		}
 		return 0, fmt.Errorf("%s %s: %w", method, path, err)
 	}

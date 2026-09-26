@@ -37,9 +37,11 @@ test-ui:
 	cd ui/dashboard && npm ci && npx playwright install chromium && npm test
 
 lint-sh:
-	shellcheck --shell=sh --severity=style install/install.sh install/packaging/*.sh test/e2e/linux/*.sh .github/scripts/*.sh test/release/*.sh app/tray/scripts/*.sh
+	shellcheck --shell=sh --severity=style install/install.sh install/packaging/*.sh test/install/*.sh test/e2e/linux/*.sh .github/scripts/*.sh test/release/*.sh app/tray/scripts/*.sh
+	sh test/install/install-test.sh >/dev/null
 	sh test/release/next-version-test.sh >/dev/null
 	sh test/release/winget-manifests-test.sh >/dev/null
+	sh test/release/verify-release-sums-test.sh >/dev/null
 
 vuln:
 	govulncheck ./...

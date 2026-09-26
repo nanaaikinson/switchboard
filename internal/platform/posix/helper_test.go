@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -23,7 +24,12 @@ func startHelper(t *testing.T, hosts func([]string) error, addrs ...string) *Ser
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	s := &Server{Socket: filepath.Join(dir, "run", "helper.sock"), UID: os.Getuid(), GID: os.Getgid(), Addrs: addrs, Hosts: hosts}
+	return serveHelper(t, &Server{Socket: filepath.Join(dir, "run", "helper.sock"), UID: os.Getuid(), GID: os.Getgid(), Addrs: addrs, Hosts: hosts})
+}
+
+// serveHelper runs s until the test ends.
+func serveHelper(t *testing.T, s *Server) *Server {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- s.Serve(ctx) }()
@@ -182,5 +188,114 @@ func TestHelperRejectsHugeRequest(t *testing.T) {
 	}
 	if !strings.Contains(resp.Error, "bad request") {
 		t.Errorf("resp = %+v, want bad request", resp)
+	}
+}
+
+// The helper binds the DNS port for the daemon, UDP and TCP, so no other user
+// can bind it first. A helper without DNSAddr answers like an earlier
+// version, and the daemon falls back to binding its own port.
+func TestHelperPassesDNSSockets(t *testing.T) {
+	dir, err := os.MkdirTemp("", "sbh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	s := serveHelper(t, &Server{Socket: filepath.Join(dir, "helper.sock"), UID: os.Getuid(), GID: os.Getgid(), DNSAddr: "127.0.0.1:0"})
+	pc, ln, err := DNSSockets(context.Background(), s.Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	defer ln.Close()
+	if _, ok := pc.(*net.UDPConn); !ok || !strings.HasPrefix(pc.LocalAddr().String(), "127.0.0.1:") {
+		t.Errorf("UDP socket %T %s", pc, pc.LocalAddr())
+	}
+	go func() {
+		buf := make([]byte, 16)
+		n, from, err := pc.ReadFrom(buf)
+		if err == nil {
+			_, _ = pc.WriteTo(buf[:n], from)
+		}
+	}()
+	c, err := net.Dial("udp", pc.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 4)
+	if _, err := c.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Read(buf); err != nil || string(buf) != "ping" {
+		t.Errorf("UDP echo over the received socket: %q, %v", buf, err)
+	}
+	if _, err := net.DialTimeout("tcp", ln.Addr().String(), 2*time.Second); err != nil {
+		t.Errorf("TCP socket: %v", err)
+	}
+
+	old := startHelper(t, nil, "127.0.0.1:0")
+	if _, _, err := DNSSockets(context.Background(), old.Socket); !errors.Is(err, ErrOldHelper) || !strings.Contains(err.Error(), "sb setup") {
+		t.Errorf("helper without DNS: %v", err)
+	}
+	for _, addr := range []string{"0.0.0.0:0", "10.0.0.1:53", "bad"} {
+		if _, err := bindDNS(addr); err == nil {
+			t.Errorf("bindDNS(%s) bound beyond loopback", addr)
+		}
+	}
+}
+
+func TestHelperBuild(t *testing.T) {
+	dir, err := os.MkdirTemp("", "sbh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	s := serveHelper(t, &Server{Socket: filepath.Join(dir, "helper.sock"), UID: os.Getuid(), GID: os.Getgid(), Build: "v1.2.0"})
+	if build, err := HelperBuild(context.Background(), s.Socket); err != nil || build != "v1.2.0" {
+		t.Errorf("HelperBuild = %q, %v", build, err)
+	}
+	if err := CheckHelperBuild(context.Background(), s.Socket, "v1.2.0"); err != nil {
+		t.Errorf("same version: %v", err)
+	}
+	var f interface{ Fix() string }
+	if err := CheckHelperBuild(context.Background(), s.Socket, "v1.3.0"); !errors.As(err, &f) || !strings.Contains(err.Error(), "running sb v1.2.0, but this is sb v1.3.0") || !strings.Contains(f.Fix(), "sb setup") {
+		t.Errorf("other version: %v", err)
+	}
+}
+
+// Only the user (or root) gets an answer, whatever the socket's mode.
+func TestHelperChecksPeerUID(t *testing.T) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := func(fd int) *net.UnixConn {
+		f := os.NewFile(uintptr(fd), "pair")
+		defer f.Close()
+		c, err := net.FileConn(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c.(*net.UnixConn)
+	}
+	server, client := conn(fds[0]), conn(fds[1])
+	defer client.Close()
+	if uid, err := peerUID(server); err != nil || uid != os.Getuid() {
+		t.Fatalf("peerUID = %d, %v; want %d", uid, err, os.Getuid())
+	}
+	s := &Server{UID: os.Getuid() + 1, Addrs: []string{"127.0.0.1:0"}}
+	go func() {
+		_, _ = client.Write([]byte(`{"version":1,"op":"listeners"}` + "\n"))
+	}()
+	var ports, dns socketSet
+	defer ports.close()
+	s.handle(server, &ports, &dns)
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if n, _ := client.Read(make([]byte, 64)); n != 0 {
+		t.Error("answered another user")
+	}
+	if ports.socks != nil {
+		t.Error("bound ports for another user")
 	}
 }

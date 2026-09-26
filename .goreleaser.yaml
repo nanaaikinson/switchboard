@@ -12,11 +12,12 @@ builds:
     binary: sb
     env: [CGO_ENABLED=0]
     flags: [-trimpath]
-    # SB_UPDATE_PUBLIC_KEY (a minisign "RW..." key) enables sb self-update;
-    # without it the build refuses to self-update. See docs/updates.md.
+    # The release key is committed in internal/update/key.go; a set
+    # SB_UPDATE_PUBLIC_KEY (a minisign "RW..." key) overrides it, and an unset
+    # one leaves it alone. See docs/updates.md.
     ldflags:
       - -s -w -X main.version={{ .Tag }}
-      - -X github.com/nanaaikinson/switchboard/internal/update.ReleaseKey={{ index .Env "SB_UPDATE_PUBLIC_KEY" }}
+      - '{{ with index .Env "SB_UPDATE_PUBLIC_KEY" }}-X github.com/nanaaikinson/switchboard/internal/update.ReleaseKey={{ . }}{{ end }}'
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
     # Signs and notarizes the darwin binaries before they're archived, so

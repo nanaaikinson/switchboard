@@ -80,6 +80,17 @@ func badGateway(w http.ResponseWriter, port int, notListening bool) {
 	render(w, http.StatusBadGateway, pg)
 }
 
+// loopDetected explains that the route's port leads back to Switchboard.
+func loopDetected(w http.ResponseWriter, port int) {
+	render(w, http.StatusLoopDetected, page{
+		Title: "This route loops back to Switchboard",
+		Lines: []string{
+			"Port " + strconv.Itoa(port) + " is Switchboard's own, so the request came straight back.",
+			"Point the route at your app's port instead, with sb add <name> <port>.",
+		},
+	})
+}
+
 func render(w http.ResponseWriter, status int, pg page) {
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")

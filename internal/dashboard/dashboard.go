@@ -21,8 +21,10 @@ import (
 	"time"
 )
 
-// CookieName is the session cookie.
-const CookieName = "sb_session"
+// CookieName is the session cookie. The __Host- prefix makes browsers accept
+// it only when set by the dashboard itself, over HTTPS, with Path=/ and no
+// Domain, so a page on another name can't plant or shadow it.
+const CookieName = "__Host-sb_session"
 
 // LoginTTL is how long a login link from NewLogin works. Each works once.
 const LoginTTL = 2 * time.Minute
@@ -100,6 +102,13 @@ func (s *Server) Wrap(next http.Handler, hosts []string, httpsPort int) http.Han
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := hostOnly(r.Host)
 		if !slices.Contains(hosts, host) {
+			// Names under the dashboard's are reserved too; a broad wildcard
+			// route such as *.test must not serve them.
+			if i := slices.IndexFunc(hosts, func(h string) bool { return strings.HasSuffix(host, "."+h) }); i >= 0 {
+				page(w, http.StatusNotFound, "This name is reserved",
+					"Names under "+html.EscapeString(hosts[i])+" belong to the Switchboard dashboard and are never routed.")
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -157,7 +166,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		page(w, http.StatusForbidden, "This sign-in link has expired", "Links work once, for two minutes. Run <code>sb dashboard</code> again.")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ // no Domain: required by the __Host- prefix
 		Name: CookieName, Value: s.session, Path: "/",
 		HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode,
 	})

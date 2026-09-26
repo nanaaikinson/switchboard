@@ -35,7 +35,8 @@ func newAddCmd() *cobra.Command {
 		Long: `Route a name to an app on 127.0.0.1:<port>. Names without a Switchboard TLD
 get the default TLD appended: 'myapp' becomes myapp.test. Prefix a name with
 '*.' for a wildcard, or pass --wildcard to also match every subdomain.
-Adding an existing name updates it.`,
+Adding an existing name updates it. Ports 80 and 443 are refused: Switchboard
+listens there itself, so the route would loop back to it.`,
 		Example: "  sb add myapp 7000\n  sb add api.myapp 7001\n  sb add '*.tenants.myapp' 3000\n  sb add myapp 7000 --wildcard",
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {

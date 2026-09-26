@@ -77,10 +77,13 @@ Releases are unsigned ([releasing.md](releasing.md#windows-signing)).
 
 ## Update and checksum signing
 
-- [ ] Generate the minisign release key. Set `MINISIGN_SECRET_KEY` and
-  `SB_UPDATE_PUBLIC_KEY`, and put the public key into `MINISIGN_PUBKEY` in
-  [install.sh](../install/install.sh) and `$SbMinisignPubkey` in
-  [install.ps1](../install/install.ps1), both empty so far ([updates.md](updates.md)).
+- [x] Generate the minisign release key and pin its public key in
+  [install.sh](../install/install.sh), [install.ps1](../install/install.ps1) and
+  `internal/update/key.go` ([install.md](install.md#enabling-signature-checks-maintainers)).
+- [x] Set the `MINISIGN_SECRET_KEY` secret and the `SB_UPDATE_PUBLIC_KEY` variable
+  ([updates.md](updates.md)).
 - [ ] Set `UPDATES_DEPLOY_TOKEN` and create the `switchboard-updates` Pages repository.
-- [ ] Generate the Tauri updater key. Set `TAURI_SIGNING_PRIVATE_KEY`,
-  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` and `TAURI_UPDATER_PUBKEY`.
+- [x] Set `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_UPDATER_PUBKEY` from the same
+  release key. It has no password, so `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` stays unset.
+- [ ] Cut the first signed release and check that the Tauri signer accepts a
+  `minisign -W` key and that the install scripts install it.

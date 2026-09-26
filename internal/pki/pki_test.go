@@ -7,7 +7,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -40,7 +42,7 @@ func verify(ca *CA, leaf *x509.Certificate, host string) error {
 
 func TestCreateCA(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "pki")
-	ca, err := LoadOrCreate(dir, []string{"test", "dev"})
+	ca, err := LoadOrCreate(dir, []string{"test", "local"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,8 +50,17 @@ func TestCreateCA(t *testing.T) {
 	if !c.IsCA || !c.MaxPathLenZero || !c.PermittedDNSDomainsCritical {
 		t.Errorf("CA flags: IsCA=%v MaxPathLenZero=%v critical=%v", c.IsCA, c.MaxPathLenZero, c.PermittedDNSDomainsCritical)
 	}
-	if strings.Join(c.PermittedDNSDomains, ",") != "test,dev" || len(c.ExcludedIPRanges) != 2 {
+	if strings.Join(c.PermittedDNSDomains, ",") != "test,local" || len(c.ExcludedIPRanges) != 2 {
 		t.Errorf("constraints: dns %v, excluded IPs %v", c.PermittedDNSDomains, c.ExcludedIPRanges)
+	}
+	if len(c.ExtKeyUsage) != 1 || c.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth {
+		t.Errorf("CA EKU %v, want server auth only", c.ExtKeyUsage)
+	}
+	if strings.Join(c.PermittedEmailAddresses, ",") != "invalid" || strings.Join(c.PermittedURIDomains, ",") != "invalid" {
+		t.Errorf("mail/URI constraints: %v %v", c.PermittedEmailAddresses, c.PermittedURIDomains)
+	}
+	if !OwnedBy(c, currentUID(), "") || ca.Legacy {
+		t.Errorf("owner tag %v (legacy %v), want %q", c.Subject.OrganizationalUnit, ca.Legacy, OwnerTag(currentUID()))
 	}
 	if _, ok := c.PublicKey.(*ecdsa.PublicKey); !ok || c.PublicKey.(*ecdsa.PublicKey).Curve != elliptic.P256() {
 		t.Errorf("CA key is %T, want ECDSA P-256", c.PublicKey)
@@ -112,7 +123,7 @@ func TestConcurrentCreateKeepsOneCA(t *testing.T) {
 }
 
 func TestCreateRejectsBadTLDs(t *testing.T) {
-	for _, tlds := range [][]string{nil, {""}, {"my.test"}, {"*"}, {"Test"}} {
+	for _, tlds := range [][]string{nil, {""}, {"my.test"}, {"*"}, {"Test"}, {"com"}, {"test", "dev"}} {
 		if _, err := LoadOrCreate(t.TempDir(), tlds); err == nil {
 			t.Errorf("tlds %q accepted", tlds)
 		}
@@ -147,6 +158,28 @@ func TestNameConstraintsRejectOtherDomains(t *testing.T) {
 		var cie x509.CertificateInvalidError
 		if err := verify(ca, leaf, host); !errors.As(err, &cie) || cie.Reason != x509.CANotAuthorizedForThisName {
 			t.Errorf("%s: verify err = %v, want CANotAuthorizedForThisName", host, err)
+		}
+	}
+}
+
+// A code-signing or mail certificate signed by our CA key must not verify
+// either: those carry no DNS names, so only the CA's EKU stops them.
+func TestEKURejectsOtherUses(t *testing.T) {
+	ca := newCA(t)
+	for _, eku := range []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning, x509.ExtKeyUsageEmailProtection, x509.ExtKeyUsageClientAuth} {
+		key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		tmpl := &x509.Certificate{
+			SerialNumber: randomSerial(), Subject: pkix.Name{CommonName: "Microsoft Corporation"},
+			NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+			ExtKeyUsage: []x509.ExtKeyUsage{eku},
+		}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.Cert, key.Public(), ca.key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		leaf, _ := x509.ParseCertificate(der)
+		if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots(ca), KeyUsages: []x509.ExtKeyUsage{eku}}); err == nil {
+			t.Errorf("EKU %v: leaf verified", eku)
 		}
 	}
 }
@@ -205,6 +238,102 @@ func TestIssueWildcard(t *testing.T) {
 	}
 	if err := verify(ca, a.Leaf, "x.deep.myapp.test"); err == nil {
 		t.Error("*.myapp.test verified for a second-level subdomain")
+	}
+}
+
+// Names without a route (any web page can make a browser ask for
+// random.test) get a certificate, but only in memory and at a limited rate.
+func TestUnroutedNamesAreRateLimited(t *testing.T) {
+	ca := newCA(t)
+	now := time.Now()
+	iss := NewIssuer(ca, IssuerOptions{
+		Routed: func(host string) bool { return host == "myapp.test" },
+		Now:    func() time.Time { return now },
+	})
+	hello := func(host string) (*tls.Certificate, error) {
+		return iss.GetCertificate(&tls.ClientHelloInfo{ServerName: host})
+	}
+	for n := range unroutedBurst {
+		if _, err := hello(fmt.Sprintf("r%d.test", n)); err != nil {
+			t.Fatalf("unrouted name %d within the burst: %v", n, err)
+		}
+	}
+	if _, err := hello("one-too-many.test"); err == nil || !strings.Contains(err.Error(), "add a route") {
+		t.Errorf("past the burst: %v", err)
+	}
+	if _, err := hello("r0.test"); err != nil {
+		t.Errorf("cached unrouted name: %v", err)
+	}
+	if _, err := hello("myapp.test"); err != nil {
+		t.Errorf("routed name while limited: %v", err)
+	}
+	now = now.Add(unroutedEvery)
+	if _, err := hello("later.test"); err != nil {
+		t.Errorf("after the refill: %v", err)
+	}
+	files, _ := filepath.Glob(filepath.Join(ca.dir, leafDirName, "*.pem"))
+	if len(files) != 1 || filepath.Base(files[0]) != "myapp.test.pem" {
+		t.Errorf("leaf files %v, want only the routed name's", files)
+	}
+}
+
+func TestCacheIsBounded(t *testing.T) {
+	iss := NewIssuer(newCA(t), IssuerOptions{})
+	iss.max = 3
+	first, err := iss.Certificate("a.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"b.test", "c.test", "d.test"} {
+		if _, err := iss.Certificate(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(iss.cache) != 3 || iss.lru.Len() != 3 || iss.cache["a.test"] != nil {
+		t.Errorf("cache holds %d (list %d); a.test evicted: %v", len(iss.cache), iss.lru.Len(), iss.cache["a.test"] == nil)
+	}
+	again, err := iss.Certificate("a.test") // read back from disk
+	if err != nil || !again.Leaf.Equal(first.Leaf) {
+		t.Errorf("evicted leaf not reloaded from disk: %v", err)
+	}
+}
+
+func TestConcurrentRequestsShareOneIssue(t *testing.T) {
+	iss := NewIssuer(newCA(t), IssuerOptions{})
+	certs := make([]*tls.Certificate, 16)
+	var wg sync.WaitGroup
+	for n := range certs {
+		wg.Go(func() {
+			c, err := iss.Certificate("same.test")
+			if err != nil {
+				t.Error(err)
+			}
+			certs[n] = c
+		})
+	}
+	wg.Wait()
+	for _, c := range certs {
+		if c != certs[0] {
+			t.Fatal("concurrent requests for one name issued different leaves")
+		}
+	}
+}
+
+func TestPruneLeaves(t *testing.T) {
+	ca := newCA(t)
+	now := time.Now()
+	old := NewIssuer(ca, IssuerOptions{Now: func() time.Time { return now.Add(-LeafValidity) }})
+	if _, err := old.Certificate("stale.test"); err != nil {
+		t.Fatal(err)
+	}
+	iss := NewIssuer(ca, IssuerOptions{})
+	if _, err := iss.Certificate("*.fresh.test"); err != nil {
+		t.Fatal(err)
+	}
+	iss.PruneLeaves()
+	files, _ := filepath.Glob(filepath.Join(ca.dir, leafDirName, "*.pem"))
+	if len(files) != 1 || filepath.Base(files[0]) != "_wildcard.fresh.test.pem" {
+		t.Errorf("after prune: %v", files)
 	}
 }
 
@@ -286,38 +415,205 @@ func TestLeafFromOtherCAIsReissued(t *testing.T) {
 	}
 }
 
+// selfSigned makes a self-signed certificate from a valid Switchboard CA
+// template after edit changes it.
+func selfSigned(t *testing.T, edit func(*x509.Certificate)) *x509.Certificate {
+	t.Helper()
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tmpl := &x509.Certificate{
+		SerialNumber: randomSerial(), Subject: pkix.Name{CommonName: CAName, Organization: []string{caOrg}, OrganizationalUnit: []string{OwnerTag("501")}},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, MaxPathLenZero: true, KeyUsage: x509.KeyUsageCertSign,
+		ExtKeyUsage:                 []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		PermittedDNSDomainsCritical: true, PermittedDNSDomains: []string{"test"}, ExcludedIPRanges: allIPs(),
+	}
+	edit(tmpl)
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
 func TestValidateRejects(t *testing.T) {
-	good := newCA(t).Cert
-	if err := Validate(good, time.Now()); err != nil {
+	if err := Validate(newCA(t).Cert, time.Now()); err != nil {
 		t.Fatalf("good CA: %v", err)
 	}
-	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	mk := func(edit func(*x509.Certificate)) *x509.Certificate {
-		tmpl := &x509.Certificate{
-			SerialNumber: randomSerial(), Subject: pkix.Name{CommonName: "x"},
-			NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
-			IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
-			PermittedDNSDomainsCritical: true, PermittedDNSDomains: []string{"test"}, ExcludedIPRanges: allIPs(),
+	if err := Validate(selfSigned(t, func(*x509.Certificate) {}), time.Now()); err != nil {
+		t.Fatalf("good template: %v", err)
+	}
+	for name, edit := range map[string]func(*x509.Certificate){
+		"unconstrained":   func(c *x509.Certificate) { c.PermittedDNSDomains = nil },
+		"not critical":    func(c *x509.Certificate) { c.PermittedDNSDomainsCritical = false },
+		"allows IPs":      func(c *x509.Certificate) { c.ExcludedIPRanges = nil },
+		"multi-label":     func(c *x509.Certificate) { c.PermittedDNSDomains = []string{"google.com"} },
+		"public TLD":      func(c *x509.Certificate) { c.PermittedDNSDomains = []string{"com"} },
+		"one public TLD":  func(c *x509.Certificate) { c.PermittedDNSDomains = []string{"test", "dev"} },
+		"not a CA":        func(c *x509.Certificate) { c.IsCA, c.MaxPathLenZero = false, false },
+		"expired":         func(c *x509.Certificate) { c.NotAfter = time.Now().Add(-time.Minute) },
+		"permits all v4s": func(c *x509.Certificate) { c.PermittedIPRanges = allIPs()[:1] },
+		"no EKU":          func(c *x509.Certificate) { c.ExtKeyUsage = nil },
+		"any EKU":         func(c *x509.Certificate) { c.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageAny} },
+		"code signing":    func(c *x509.Certificate) { c.ExtKeyUsage = append(c.ExtKeyUsage, x509.ExtKeyUsageCodeSigning) },
+		"path length":     func(c *x509.Certificate) { c.MaxPathLenZero, c.MaxPathLen = false, 1 },
+		"other name":      func(c *x509.Certificate) { c.Subject.CommonName = "../../../../home/u/evil/x" },
+		"other org":       func(c *x509.Certificate) { c.Subject.Organization = []string{"Evil"} },
+	} {
+		if err := Validate(selfSigned(t, edit), time.Now()); err == nil {
+			t.Errorf("%s: accepted", name)
 		}
-		edit(tmpl)
-		der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
-		if err != nil {
+	}
+}
+
+// CAs from earlier versions have no EKU. They keep working, marked Legacy, so
+// 'sb trust' can replace them; the helper refuses to trust new ones like it.
+func TestLoadLegacyCA(t *testing.T) {
+	dir := t.TempDir()
+	legacy := selfSigned(t, func(c *x509.Certificate) {
+		c.ExtKeyUsage = nil
+		c.Subject.OrganizationalUnit = []string{"me@laptop"}
+	})
+	ca := newCA(t)
+	// Reuse a real key pair so Load's key check passes.
+	tmpl := *legacy
+	tmpl.PublicKey = nil
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, ca.key.Public(), ca.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, caDirName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	keyPEM, err := os.ReadFile(filepath.Join(ca.dir, caDirName, caKeyName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{
+		caKeyName:  keyPEM,
+		caCertName: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+	} {
+		if err := os.WriteFile(filepath.Join(dir, caDirName, name), data, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		c, _ := x509.ParseCertificate(der)
-		return c
 	}
-	for name, c := range map[string]*x509.Certificate{
-		"unconstrained":   mk(func(c *x509.Certificate) { c.PermittedDNSDomains = nil }),
-		"not critical":    mk(func(c *x509.Certificate) { c.PermittedDNSDomainsCritical = false }),
-		"allows IPs":      mk(func(c *x509.Certificate) { c.ExcludedIPRanges = nil }),
-		"multi-label":     mk(func(c *x509.Certificate) { c.PermittedDNSDomains = []string{"google.com"} }),
-		"not a CA":        mk(func(c *x509.Certificate) { c.IsCA = false }),
-		"expired":         mk(func(c *x509.Certificate) { c.NotAfter = time.Now().Add(-time.Minute) }),
-		"permits all v4s": mk(func(c *x509.Certificate) { c.PermittedIPRanges = allIPs()[:1] }),
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatalf("legacy CA: %v", err)
+	}
+	if !got.Legacy {
+		t.Error("legacy CA not marked Legacy")
+	}
+	if err := ValidateConstraints(got.Cert); err == nil {
+		t.Error("helper would trust a legacy CA")
+	}
+	if !OwnedBy(got.Cert, "501", "me") || OwnedBy(got.Cert, "501", "you") {
+		t.Error("legacy owner tag not matched by login")
+	}
+}
+
+func TestCheckTrust(t *testing.T) {
+	ca := selfSigned(t, func(*x509.Certificate) {})
+	fp := Fingerprint(ca)
+	for name, tc := range map[string]struct {
+		fp, uid string
+		ok      bool
+	}{
+		"match":           {fp, "501", true},
+		"upper-case hex":  {strings.ToUpper(fp), "501", true},
+		"no fingerprint":  {"", "501", false},
+		"swapped CA":      {Fingerprint(selfSigned(t, func(*x509.Certificate) {})), "501", false},
+		"other user's CA": {fp, "502", false},
 	} {
-		if err := Validate(c, time.Now()); err == nil {
-			t.Errorf("%s: accepted", name)
+		if err := CheckTrust(ca, tc.fp, tc.uid); (err == nil) != tc.ok {
+			t.Errorf("%s: err = %v, want ok %v", name, err, tc.ok)
+		}
+	}
+}
+
+func TestStageAndPromote(t *testing.T) {
+	dir := t.TempDir()
+	old, err := LoadOrCreate(dir, []string{"test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := Stage(dir, []string{"test", "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur, err := Load(dir); err != nil || cur.Fingerprint() != old.Fingerprint() {
+		t.Fatalf("staging replaced the CA early: %v", err)
+	}
+	if again, err := Stage(dir, []string{"test"}); err != nil || again.Fingerprint() == next.Fingerprint() {
+		t.Fatalf("restaging kept the earlier staged CA: %v", err)
+	} else {
+		next = again
+	}
+	if err := Promote(dir); err != nil {
+		t.Fatal(err)
+	}
+	cur, err := Load(dir)
+	if err != nil || cur.Fingerprint() != next.Fingerprint() {
+		t.Fatalf("after promote: %v", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if e.Name() != caDirName {
+			t.Errorf("left %s behind", e.Name())
+		}
+	}
+	if err := Promote(dir); err == nil {
+		t.Error("promoted with nothing staged")
+	}
+}
+
+// If the staged CA can't be moved into place, the current one stays.
+func TestPromoteFailureKeepsCA(t *testing.T) {
+	dir := t.TempDir()
+	old, err := LoadOrCreate(dir, []string{"test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Stage(dir, []string{"test"}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	rename = func(from, to string) error {
+		if calls++; calls == 2 {
+			return errors.New("disk full")
+		}
+		return os.Rename(from, to)
+	}
+	t.Cleanup(func() { rename = os.Rename })
+	if err := Promote(dir); err == nil {
+		t.Fatal("promote succeeded")
+	}
+	if cur, err := Load(dir); err != nil || cur.Fingerprint() != old.Fingerprint() {
+		t.Errorf("after a failed promote: %v", err)
+	}
+}
+
+func TestOwnedBy(t *testing.T) {
+	mine := selfSigned(t, func(*x509.Certificate) {})
+	for name, tc := range map[string]struct {
+		cert       *x509.Certificate
+		uid, login string
+		want       bool
+	}{
+		"mine":          {mine, "501", "me", true},
+		"other uid":     {mine, "502", "me", false},
+		"no uid":        {mine, "", "me", false},
+		"uid prefix":    {selfSigned(t, func(c *x509.Certificate) { c.Subject.OrganizationalUnit = []string{OwnerTag("5012")} }), "501", "", false},
+		"not ours":      {selfSigned(t, func(c *x509.Certificate) { c.Subject.CommonName = "Other CA" }), "501", "me", false},
+		"two OUs":       {selfSigned(t, func(c *x509.Certificate) { c.Subject.OrganizationalUnit = []string{OwnerTag("501"), "x"} }), "501", "", false},
+		"legacy, login": {selfSigned(t, func(c *x509.Certificate) { c.Subject.OrganizationalUnit = []string{"me@host"} }), "501", "me", true},
+		"legacy, other": {selfSigned(t, func(c *x509.Certificate) { c.Subject.OrganizationalUnit = []string{"meh@host"} }), "501", "me", false},
+	} {
+		if got := OwnedBy(tc.cert, tc.uid, tc.login); got != tc.want {
+			t.Errorf("%s: OwnedBy = %v, want %v", name, got, tc.want)
 		}
 	}
 }

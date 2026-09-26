@@ -3,6 +3,7 @@ package update
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -41,19 +42,33 @@ func TestBuildManifestRoundTrip(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	m, err := BuildManifest(PublishOptions{Version: "v1.4.0", BaseURL: srv.URL, PublicKey: k.pub, Rollout: 20}, []string{path})
+	pubDate := "2026-01-01T12:00:00Z"
+	m, err := BuildManifest(PublishOptions{Version: "v1.4.0", BaseURL: srv.URL, PublicKey: k.pub, Rollout: 20, PubDate: pubDate}, []string{path})
 	if err != nil {
 		t.Fatal(err)
 	}
 	a := m.Platforms["darwin-arm64"]
-	if m.Rollout() != 20 || a.URL != srv.URL+"/sb_1.4.0_darwin_arm64.tar.gz" || len(a.SHA256) != 64 {
+	if m.Rollout() != 20 || a.URL != srv.URL+"/sb_1.4.0_darwin_arm64.tar.gz" || len(a.SHA256) != 64 || m.PubDate != pubDate {
 		t.Fatalf("manifest %+v", m)
 	}
+	// Published as the release workflow does: stable.json, signed for stable.
+	body, _ := json.MarshalIndent(m, "", "  ")
+	manifest := writeSigned(t, dir, "stable.json", body, k.sign(body, ManifestComment("stable", pubDate), false), ".minisig")
+	if _, err := CheckSignedManifest(k.pub, "stable", manifest); err != nil {
+		t.Fatalf("sb-manifest -verify: %v", err)
+	}
+	if _, err := CheckSignedManifest(k.pub, "beta", manifest); err == nil {
+		t.Error("the stable manifest verified as beta")
+	}
 	// What the release publishes is exactly what the client accepts.
-	u := Updater{PublicKey: k.pub, Current: "v1.3.0", Platform: "darwin-arm64", HTTP: srv.Client()}
-	bin, err := u.Download(context.Background(), Check{Manifest: m, Asset: a})
+	u := Updater{BaseURL: srv.URL, PublicKey: k.pub, Current: "v1.3.0", Platform: "darwin-arm64", HTTP: srv.Client(), StateDir: t.TempDir()}
+	c, err := u.Check(context.Background(), "stable")
+	if err != nil || !c.Newer {
+		t.Fatalf("client rejected the published manifest: %+v, %v", c, err)
+	}
+	bin, err := u.Download(context.Background(), c)
 	if err != nil || string(bin) != "sb 1.4.0" {
-		t.Errorf("client rejected the published manifest: %q, %v", bin, err)
+		t.Errorf("client rejected the published archive: %q, %v", bin, err)
 	}
 }
 
@@ -117,5 +132,39 @@ func TestBuildTrayManifest(t *testing.T) {
 	}
 	if _, err := BuildTrayManifest(PublishOptions{Version: "v1.4.0", BaseURL: "https://e", PublicKey: k.pub}, paths); err == nil {
 		t.Error("tampered bundle accepted")
+	}
+}
+
+func TestCheckSignedTrayManifest(t *testing.T) {
+	if got := TrayManifestComment("stable", "1.4.0"); got != "switchboard-tray stable 1.4.0" {
+		t.Fatalf("comment %q; the tray app (signed_manifest.rs) expects the same", got)
+	}
+	k, other := newKey(t), newKey(t)
+	body := []byte(`{"version":"1.4.0","rollout_percent":100,"platforms":{"darwin-aarch64":{"signature":"x","url":"https://e/a"}}}`)
+	pre := []byte(`{"version":"1.5.0-rc.1","rollout_percent":100,"platforms":{}}`)
+	for name, tc := range map[string]struct {
+		body    []byte
+		sig     []byte
+		channel string
+		why     string // "" means it verifies
+	}{
+		"signed for its channel and version": {body, k.sign(body, "switchboard-tray stable 1.4.0", false), "stable", ""},
+		"the same manifest on beta":          {body, k.sign(body, "switchboard-tray beta 1.4.0", false), "beta", ""},
+		"a beta pre-release":                 {pre, k.sign(pre, "switchboard-tray beta 1.5.0-rc.1", false), "beta", ""},
+		"signed for beta, served as stable":  {body, k.sign(body, "switchboard-tray beta 1.4.0", false), "stable", `signed as "switchboard-tray beta 1.4.0"`},
+		"signed for another version":         {body, k.sign(body, "switchboard-tray stable 1.3.0", false), "stable", `not "switchboard-tray stable 1.4.0"`},
+		"Tauri's bundle comment":             {body, k.sign(body, "timestamp:1\tfile:x", false), "stable", "signed as"},
+		"changed after signing":              {[]byte(strings.Replace(string(body), "1.4.0", "9.0.0", 1)), k.sign(body, "switchboard-tray stable 1.4.0", false), "stable", "doesn't match its signature"},
+		"another key":                        {body, other.sign(body, "switchboard-tray stable 1.4.0", false), "stable", "not the update key"},
+		"no signature":                       {body, nil, "stable", "has no signature"},
+		"a pre-release on stable":            {pre, k.sign(pre, "switchboard-tray stable 1.5.0-rc.1", false), "stable", "stable channel offers pre-release"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeSigned(t, t.TempDir(), "stable.json", tc.body, tc.sig, ".minisig")
+			_, err := CheckSignedTrayManifest(k.pub, tc.channel, path)
+			if tc.why == "" && err != nil || tc.why != "" && (err == nil || !strings.Contains(err.Error(), tc.why)) {
+				t.Errorf("err = %v, want %q", err, tc.why)
+			}
+		})
 	}
 }

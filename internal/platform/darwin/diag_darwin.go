@@ -27,7 +27,11 @@ func (p *Platform) HelperRunning(ctx context.Context) error {
 	c, err := d.DialContext(ctx, "unix", p.o.HelperSocket)
 	switch {
 	case err == nil:
-		return c.Close()
+		_ = c.Close()
+		if p.o.Version == "" {
+			return nil
+		}
+		return posix.CheckHelperBuild(ctx, p.o.HelperSocket, p.o.Version)
 	case errors.Is(err, fs.ErrNotExist):
 		if _, serr := os.Stat(p.fs(helperPlistPath)); serr != nil {
 			return withFix("Run 'sb setup'.", "not installed (no %s)", helperPlistPath)

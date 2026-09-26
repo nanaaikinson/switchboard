@@ -24,7 +24,7 @@ pub fn install_id(dir: &Path) -> std::io::Result<String> {
 }
 
 #[cfg(unix)]
-fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let mut f = std::fs::OpenOptions::new()
@@ -37,7 +37,7 @@ fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, data)
 }
 

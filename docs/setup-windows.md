@@ -37,7 +37,14 @@ Why each choice:
 - **NRPT rather than a DNS server setting.** An NRPT rule applies to one namespace
   only, so the rest of your DNS is untouched, and it covers every adapter, VPNs
   included. NRPT names a server by IP address only, with no port, so the daemon's DNS
-  server is on `127.0.0.1:53` on Windows (`127.0.0.1:15353` elsewhere).
+  server is on `127.0.0.1:53` on Windows (elsewhere `127.0.0.1:535`, bound by the root helper).
+- **Known limit: the ports are first come, first served.** Windows has no privileged
+  ports, so on a machine shared with other accounts, another user's process can bind
+  `127.0.0.1:53`, `:80` or `:443` while your daemon is stopped, and see or answer
+  traffic meant for Switchboard. It can't serve trusted HTTPS for your names, since it
+  doesn't have your CA key. `sb doctor` names the process holding each port and fails
+  if it runs as another account. On macOS and Linux the root helper binds these ports,
+  so this can't happen there.
 - **A Scheduled Task rather than a service.** Services run as SYSTEM or a service
   account; the daemon must run as you, in your logon session, to use your config dir
   and your control pipe.
@@ -50,9 +57,10 @@ Why each choice:
 
 `sb setup` prints the plan, asks for confirmation, then runs itself elevated through
 PowerShell's `Start-Process -Verb RunAs -Wait`: one UAC prompt. The elevated process is
-`sb helper install --user DOMAIN\you --sb-path <sb.exe> ...` and does only the three steps
-above. The unelevated `sb setup` passes your account name, so with over-the-shoulder
-elevation the task is still registered for you, not the administrator.
+`sb helper install --user DOMAIN\you --sid <your SID> --sb-path <sb.exe> ...` and does
+only the three steps above. The unelevated `sb setup` passes your account name and SID,
+and the helper checks that they match, so with over-the-shoulder elevation the task is
+still registered for you, not the administrator.
 
 An elevated process can't write to your console, so it writes its output to a
 temporary `sb-helper-*.log` that `sb setup` created, which `sb setup` prints and
@@ -68,6 +76,10 @@ their choice. If it refuses, it carries on with no log.
 On Windows the CLI and the daemon talk over a named pipe,
 `\\.\pipe\switchboard-<id>`, instead of a Unix socket. See [api.md](api.md). Only your
 account can open it, and the CLI refuses to talk to a pipe served by another account.
+Part of the name is random, kept in `%APPDATA%\switchboard\pipe-id`, so another account
+can't guess it and take it first. If one does anyway, the daemon won't start and
+`sb doctor` names that account; delete `pipe-id` and start the daemon again to move to
+a new name.
 
 ## Port conflicts
 
@@ -150,7 +162,9 @@ Keep a second VM snapshot, or a second VM, with IIS installed for steps 24 to 27
 10. Task Manager → Details: `sb.exe` runs as you, not elevated (the "Elevated" column
     says No), under a `conhost.exe`. **No visible console window.**
 11. `certlm.msc` → Trusted Root Certification Authorities → Certificates:
-    "Switchboard Local CA". Open it: Name Constraints permits `.test`. `certmgr.msc` (your user store) doesn't list it.
+    "Switchboard Local CA". Open it: Name Constraints permits `.test`, Enhanced Key
+    Usage is Server Authentication only, and on the Details tab "Edit Properties..."
+    shows only Server Authentication enabled. `certmgr.msc` (your user store) doesn't list it.
 12. `Get-NetTCPConnection -State Listen -LocalPort 53,80,443`: 127.0.0.1 (and ::1 for
     80/443) owned by the `sb.exe` PID. `Get-NetUDPEndpoint -LocalPort 53`: 127.0.0.1.
 13. `Resolve-DnsName anything.test` and `Resolve-DnsName deep.sub.anything.test`:
@@ -206,9 +220,12 @@ Keep a second VM snapshot, or a second VM, with IIS installed for steps 24 to 27
 29. Squatting: sign out the second user, stop your task, then as the second user
     create a pipe with your pipe's name:
     `$s = [IO.Pipes.NamedPipeServerStream]::new('switchboard-<id>', 'InOut', 10); $s.WaitForConnection()`.
-    As you, `sb ls` refuses: the pipe is served by another user. `Start-ScheduledTask`:
-    the daemon fails to claim the pipe and says why (see the task's history / `sb
-    daemon` in a terminal). Stop the second user's PowerShell; the daemon starts.
+    As you, `sb ls` refuses: the pipe is served by another user, named as
+    `DOMAIN\user (SID)`. `Start-ScheduledTask`: the daemon fails to claim the pipe and
+    says why, naming the account (see the task's history / `sb daemon` in a terminal).
+    `sb doctor`: `[FAIL] daemon: ...`, saying to delete `pipe-id`. Delete it and
+    `Start-ScheduledTask`: the daemon starts on a new pipe name while the squatter
+    still runs, and `sb ls` works.
 
 **install.ps1**
 30. Windows PowerShell 5.1:
@@ -232,10 +249,11 @@ Keep a second VM snapshot, or a second VM, with IIS installed for steps 24 to 27
 35. As the standard user from step 28, with a fresh snapshot of their setup:
     `sb setup` and type the administrator's credentials in UAC. The task is
     `Daemon-<standard user's SID>`, runs as the standard user, and the log was
-    printed. As that user, create a symbolic link or hard link named
+    printed. Running the elevated helper with a `--sid` that isn't the standard
+    user's is refused ("is not the SID of"). As that user, create a symbolic link or hard link named
     `%TEMP%\sb-helper-x.log` pointing at a file only admins can write, and run
     From an elevated shell, run
-    `sb helper trust --log <that path> --ca-cert "$env:APPDATA\switchboard\pki\ca\ca.pem"`.
+    `sb helper trust --log <that path> --ca-cert "$env:APPDATA\switchboard\pki\ca\ca.pem" --ca-fingerprint <fingerprint from sb trust --print-plan> --uid -1 --user <DOMAIN\name> --sid <SID>`.
     It still works (trust is idempotent), and the target file is unchanged.
 
 **Uninstall**

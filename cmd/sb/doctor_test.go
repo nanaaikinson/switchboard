@@ -8,7 +8,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -195,15 +197,23 @@ func TestDoctorNamesHTTPSys(t *testing.T) {
 
 func TestDoctorCAChecks(t *testing.T) {
 	dir := configDir(t)
-	if _, err := pki.LoadOrCreate(filepath.Join(dir, "pki"), []string{"dev"}); err != nil {
+	if _, err := pki.LoadOrCreate(filepath.Join(dir, "pki"), []string{"local"}); err != nil {
 		t.Fatal(err)
 	}
 	r := checkCA([]string{"test"})
-	if r.status != checkFail || r.detail != "cannot sign .test names (limited to dev)" || !strings.Contains(r.fix, "sb untrust") {
+	if r.status != checkFail || r.detail != "cannot sign .test names (limited to local)" || !strings.Contains(r.fix, "sb untrust") {
 		t.Errorf("wrong TLD: %+v", r)
 	}
-	if r := checkCA([]string{"dev"}); r.status != checkPass {
+	if r := checkCA([]string{"local"}); r.status != checkPass {
 		t.Errorf("right TLD: %+v", r)
+	}
+
+	if err := os.RemoveAll(filepath.Join(dir, "pki")); err != nil {
+		t.Fatal(err)
+	}
+	writeLegacyCA(t, filepath.Join(dir, "pki"))
+	if r := checkCA([]string{"test"}); r.status != checkFail || !strings.Contains(r.detail, "not limited to TLS") || r.fix != "Run 'sb trust' to replace it." {
+		t.Errorf("legacy CA: %+v", r)
 	}
 }
 
@@ -289,6 +299,29 @@ func TestDoctorDaemonDown(t *testing.T) {
 		fmt.Sprintf("[FAIL] port %d: held by httpd (pid 7)", named),
 		fmt.Sprintf("[SKIP] port %d: daemon not running", hidden),
 		fmt.Sprintf("[FAIL] myapp.test: nothing listening on 127.0.0.1:%d", dead),
+	)
+}
+
+// A control socket another user could have replaced isn't trusted, and doctor
+// says what to do instead of suggesting a restart.
+func TestDoctorUntrustedSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the pipe's owner is checked by the Windows pipe tests")
+	}
+	dir := configDir(t)
+	ln, err := api.ListenControl(controlAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	useDiag(t, fakeDiag{helperErr: errors.ErrUnsupported, lookupErr: errors.New("no")})
+	out, _ := run(t, "doctor")
+	wantLines(t, out,
+		"[FAIL] daemon: untrusted control socket: other users can write to "+dir+" (mode 777) and could replace the control socket; run: chmod 700 "+dir,
+		"       fix: Do what the message says; until then sb won't talk to the daemon, since whoever answers may not be yours.",
 	)
 }
 

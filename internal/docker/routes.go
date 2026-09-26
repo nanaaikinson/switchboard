@@ -98,6 +98,10 @@ func Routes(containers []Container, tlds []string) ([]Route, []Skip) {
 			switch {
 			case !config.ValidHostname(q):
 				skips = append(skips, Skip{name, fmt.Sprintf("%q is not a valid hostname; fix %s", h, LabelHosts)})
+			case strings.HasPrefix(q, "*.") && strings.Count(q, ".") == 1:
+				// It would catch every name under the TLD that has no route.
+				skips = append(skips, Skip{name, fmt.Sprintf("%s covers the whole .%s TLD, which a container can't take; use a name of its own in %s, like *.myapp",
+					q, q[2:], LabelHosts)})
 			case taken[q] != "":
 				skips = append(skips, Skip{name, fmt.Sprintf("%s is already used by container %s; set %s on one of them", q, taken[q], LabelHosts)})
 			default:

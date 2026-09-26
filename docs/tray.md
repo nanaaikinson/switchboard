@@ -33,7 +33,7 @@ When the daemon isn't reachable, it retries every 3 seconds. The menu has:
 | **Open Dashboard** | Gets a one-time sign-in token from the control socket and opens the dashboard in an app window. Disabled while HTTPS is down. |
 | **Pause All** | Check item. `POST /v1/pause`: every route answers 503 until unchecked (or `sb resume`, or a daemon restart). |
 | **Install Command-Line Tool…** | Links `/usr/local/bin/sb` to the app's bundled `sb` (admin dialog), so the command updates with the app. Asks before replacing an existing `sb`, e.g. one from Homebrew or `install.sh`. |
-| **Check for Updates…** | Checks the signed Tauri updater manifest (`tray/stable.json` on the update host; see [updates.md](updates.md)). It applies the same staged rollout as `sb self-update`, then offers to install and restart. In builds without an updater key, it only compares with the latest GitHub release and opens its page. |
+| **Check for Updates…** | Checks the Tauri updater manifest (`tray/stable.json` on the update host) and its own signature, `tray/stable.json.minisig`, which must name the channel and the exact version Tauri would install ([updates.md](updates.md#manifest-format)). It applies the same staged rollout as `sb self-update`, then offers to install and restart. In builds without an updater key, it only compares with the latest GitHub release and opens its page. |
 | **Start at Login** | Check item. Adds or removes a LaunchAgent for the *app* (tauri-plugin-autostart). The daemon already starts at login on its own, via `sb setup`. |
 | **Quit Switchboard** | Quits the app. The daemon keeps running. |
 
@@ -152,7 +152,9 @@ this on your main machine: setup changes system files.
     a build with the updater key, and a manifest with a newer version and
     `rollout_percent` 100, it offers Install and Restart. After installing, the app
     relaunches at the new version. With `rollout_percent` 0, it says the update isn't
-    offered to this Mac yet.
+    offered to this Mac yet. Edit the served manifest without re-signing it (e.g. raise
+    `version`), or delete its `.minisig`: it refuses with a signature error and
+    installs nothing.
 16. Dark mode (System Settings → Appearance): the wizard and Add Route follow it, and
     the menu-bar icon stays legible.
 

@@ -13,12 +13,14 @@ if ($errors) { throw "install.ps1 doesn't parse: $errors" }
 foreach ($f in $ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] }, $false)) {
 	. ([scriptblock]::Create($f.Extent.Text))
 }
-$SbRepo = 'nanaaikinson/switchboard' # releases stay unsigned here: $SbMinisignPubkey is unset
+$SbRepo = 'nanaaikinson/switchboard'
+$script:SbMinisignPubkey = '' # no release key, as now; the signature tests pin one
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ('sb-install-test-' + [Guid]::NewGuid().ToString('N'))
 $release = Join-Path $root 'release'
 New-Item -ItemType Directory -Path $release | Out-Null
-$savedEnv = @{ SB_VERSION = $env:SB_VERSION; LOCALAPPDATA = $env:LOCALAPPDATA; PROCESSOR_ARCHITECTURE = $env:PROCESSOR_ARCHITECTURE; PROCESSOR_ARCHITEW6432 = $env:PROCESSOR_ARCHITEW6432 }
+$savedEnv = @{ SB_VERSION = $env:SB_VERSION; LOCALAPPDATA = $env:LOCALAPPDATA; PROCESSOR_ARCHITECTURE = $env:PROCESSOR_ARCHITECTURE; PROCESSOR_ARCHITEW6432 = $env:PROCESSOR_ARCHITEW6432
+	SB_INSECURE_SKIP_SIGNATURE = $env:SB_INSECURE_SKIP_SIGNATURE; FAKE_COMMENT = $env:FAKE_COMMENT; FAKE_BAD_SIGNATURE = $env:FAKE_BAD_SIGNATURE }
 $failures = 0
 
 # Save-SbFile serves the fake release instead of GitHub.
@@ -27,6 +29,23 @@ function Save-SbFile([string]$Url, [string]$OutFile) {
 	$src = Join-Path $release ($Url -split '/')[-1]
 	if (-not (Test-Path -LiteralPath $src)) { throw "404 $Url" }
 	Copy-Item -LiteralPath $src -Destination $OutFile
+}
+
+# A stand-in minisign: it prints $env:FAKE_COMMENT as the trusted comment, or
+# fails when $env:FAKE_BAD_SIGNATURE is 1. Find-SbMinisign finds it only while
+# $useFakeMinisign is set, so a real minisign on this machine is never used.
+$onWindows = $env:OS -eq 'Windows_NT'
+if ($onWindows) {
+	$fakeMinisign = Join-Path $root 'minisign.cmd'
+	Set-Content -LiteralPath $fakeMinisign -Value "@echo off`r`nif `"%FAKE_BAD_SIGNATURE%`"==`"1`" exit /b 1`r`necho %FAKE_COMMENT%`r`n"
+} else {
+	$fakeMinisign = Join-Path $root 'minisign'
+	Set-Content -LiteralPath $fakeMinisign -Value "#!/bin/sh`n[ `"`$FAKE_BAD_SIGNATURE`" != 1 ] || exit 1`nprintf '%s\n' `"`$FAKE_COMMENT`"`n"
+	& chmod +x $fakeMinisign
+}
+$script:useFakeMinisign = $false
+function Find-SbMinisign {
+	if ($script:useFakeMinisign) { return Get-Command $fakeMinisign }
 }
 
 function Build-FakeRelease([string]$Version, [string]$Content) {
@@ -38,6 +57,7 @@ function Build-FakeRelease([string]$Version, [string]$Content) {
 	Compress-Archive -Path (Join-Path $stage $name) -DestinationPath (Join-Path $release "$name.zip") -Force
 	$hash = (Get-FileHash -LiteralPath (Join-Path $release "$name.zip") -Algorithm SHA256).Hash.ToLowerInvariant()
 	Set-Content -LiteralPath (Join-Path $release 'SHA256SUMS') -Value "0000  sb_other_linux_amd64.tar.gz`n$hash  $name.zip`n"
+	Set-Content -LiteralPath (Join-Path $release 'SHA256SUMS.minisig') -Value 'untrusted comment: fake'
 	return $name
 }
 
@@ -69,9 +89,10 @@ try {
 	Test-Case 'installs a verified release' {
 		Build-FakeRelease 'v1.2.3' 'one' | Out-Null
 		$env:SB_VERSION = '1.2.3'
-		Install-Sb $false $true 6>$null 3>$null
+		$warnings = Install-Sb $false $true 6>$null 3>&1 | Out-String
 		if ((Get-Content -LiteralPath $dest -Raw) -ne 'one') { throw 'wrong sb.exe installed' }
 		if (Test-Path -LiteralPath (Join-Path (Split-Path $dest) '.sb.tmp.exe')) { throw 'staged file left behind' }
+		if ($warnings -notlike '*this release is NOT signature-verified*') { throw "no warning that the release isn't signature-verified: $warnings" }
 	}
 
 	Test-Case 'upgrading keeps the previous sb as sb.old.exe' {
@@ -109,6 +130,61 @@ try {
 			Assert-Failure { Install-Sb $false $true 6>$null 3>$null } 'is not a release tag'
 		}
 	}
+
+	# With the release key pinned, as install.ps1 will be once it exists.
+	$script:SbMinisignPubkey = 'RWfake-release-key'
+	$env:FAKE_COMMENT = 'switchboard v1.6.0 SHA256SUMS'
+
+	Test-Case 'pinned key, no minisign: refuses and says how to get it' {
+		Build-FakeRelease 'v1.6.0' 'six' | Out-Null
+		$env:SB_VERSION = 'v1.6.0'
+		$script:useFakeMinisign = $false
+		Assert-Failure { Install-Sb $false $true 6>$null 3>$null } 'minisign is needed to verify the release signature. Install it (scoop install minisign'
+		if ((Get-Content -LiteralPath $dest -Raw) -ne 'two') { throw 'sb.exe changed' }
+	}
+
+	Test-Case 'pinned key, no minisign, opted out: installs with a warning' {
+		$script:useFakeMinisign = $false
+		$env:SB_INSECURE_SKIP_SIGNATURE = '1'
+		$warnings = Install-Sb $false $true 6>$null 3>&1 | Out-String
+		$env:SB_INSECURE_SKIP_SIGNATURE = $null
+		if ((Get-Content -LiteralPath $dest -Raw) -ne 'six') { throw 'not installed' }
+		if ($warnings -notlike '*SB_INSECURE_SKIP_SIGNATURE=1: NOT checking the release signature*') { throw "no warning: $warnings" }
+	}
+
+	Test-Case 'pinned key, valid signature: installs' {
+		Build-FakeRelease 'v1.6.0' 'six-signed' | Out-Null
+		$script:useFakeMinisign = $true
+		Install-Sb $false $true 6>$null 3>$null
+		if ((Get-Content -LiteralPath $dest -Raw) -ne 'six-signed') { throw 'not installed' }
+	}
+
+	Test-Case 'pinned key, invalid signature: refuses, even when opted out' {
+		Build-FakeRelease 'v1.6.0' 'evil' | Out-Null
+		$script:useFakeMinisign = $true
+		$env:FAKE_BAD_SIGNATURE = '1'
+		$env:SB_INSECURE_SKIP_SIGNATURE = '1'
+		Assert-Failure { Install-Sb $false $true 6>$null 3>$null } 'SHA256SUMS signature is invalid'
+		$env:FAKE_BAD_SIGNATURE = $null
+		$env:SB_INSECURE_SKIP_SIGNATURE = $null
+		if ((Get-Content -LiteralPath $dest -Raw) -ne 'six-signed') { throw 'sb.exe changed' }
+	}
+
+	Test-Case "pinned key, another release's signature: refuses" {
+		$script:useFakeMinisign = $true
+		$env:FAKE_COMMENT = 'switchboard v1.0.0 SHA256SUMS'
+		Assert-Failure { Install-Sb $false $true 6>$null 3>$null } "signed as 'switchboard v1.0.0 SHA256SUMS', not 'switchboard v1.6.0 SHA256SUMS'"
+		$env:FAKE_COMMENT = 'switchboard v1.6.0 SHA256SUMS'
+	}
+
+	Test-Case 'pinned key, unsigned release: refuses' {
+		$script:useFakeMinisign = $true
+		Remove-Item -LiteralPath (Join-Path $release 'SHA256SUMS.minisig')
+		Assert-Failure { Install-Sb $false $true 6>$null 3>$null } 'could not download SHA256SUMS.minisig'
+		if ((Get-Content -LiteralPath $dest -Raw) -ne 'six-signed') { throw 'sb.exe changed' }
+	}
+	$script:SbMinisignPubkey = ''
+	$script:useFakeMinisign = $false
 
 	Test-Case 'detects the CPU' {
 		$env:PROCESSOR_ARCHITECTURE = 'ARM64'

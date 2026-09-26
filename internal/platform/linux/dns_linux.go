@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -63,11 +64,21 @@ func (p *Platform) writeDropin(dir, path string, want []byte, tld string) error 
 	case err != nil && !errors.Is(err, fs.ErrNotExist):
 		return fmt.Errorf("install resolver: %w", err)
 	}
-	if err := os.MkdirAll(p.fs(dir), 0o755); err != nil { //nolint:gosec // G301: system convention for config drop-in dirs
-		return fmt.Errorf("install resolver: %w", err)
+	if _, err := os.Stat(p.fs(dir)); errors.Is(err, fs.ErrNotExist) {
+		if err := os.MkdirAll(p.fs(dir), 0o755); err != nil { //nolint:gosec // G301: system convention for config drop-in dirs
+			return fmt.Errorf("install resolver: %w", err)
+		}
+		// Remember that setup made the dir, so uninstall removes it too.
+		// Both systemd-resolved (*.conf) and dnsmasq ignore dotfiles.
+		if err := p.files.WriteFile(filepath.Join(dir, createdMarker), []byte(marker), 0o644, 0, 0); err != nil {
+			return fmt.Errorf("install resolver: %w", err)
+		}
 	}
 	return p.files.WriteFile(path, want, 0o644, 0, 0)
 }
+
+// createdMarker is left in a drop-in dir that setup created.
+const createdMarker = ".switchboard-created"
 
 func (p *Platform) reloadNetworkManager() error {
 	if _, err := p.o.Run("nmcli", "general", "reload", "dns-full"); err == nil {
@@ -107,7 +118,15 @@ func (p *Platform) removeDropin(path string) (bool, error) {
 	case !bytes.HasPrefix(got, []byte(marker)):
 		return false, fmt.Errorf("left %s in place: %w", path, ErrForeignFile)
 	}
-	return true, p.files.Remove(path)
+	if err := p.files.Remove(path); err != nil {
+		return true, err
+	}
+	dir := filepath.Dir(path)
+	if _, err := os.Stat(p.fs(filepath.Join(dir, createdMarker))); err == nil {
+		_ = p.files.Remove(filepath.Join(dir, createdMarker))
+		_ = os.Remove(p.fs(dir)) // setup made it; fails harmlessly unless empty
+	}
+	return true, nil
 }
 
 func (p *Platform) run(what, name string, args ...string) error {

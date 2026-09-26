@@ -61,12 +61,16 @@ func (w *Watcher) Run(ctx context.Context) {
 	for ctx.Err() == nil {
 		c, ep, err := w.Connect(ctx)
 		if err == nil {
-			slog.Info("docker connected", "endpoint", ep)
+			// The endpoint and errors can hold a DOCKER_HOST name, so they
+			// stay at debug; GET /v1/status and the dashboard show them.
+			slog.Info("docker connected")
+			slog.Debug("docker connected", "endpoint", ep)
 			err = w.watch(ctx, c, ep, debounce, report)
 			if ctx.Err() != nil {
 				return
 			}
-			slog.Info("docker disconnected; retrying", "err", err, "every", retry)
+			slog.Info("docker disconnected; retrying", "every", retry)
+			slog.Debug("docker disconnected", "err", err)
 		} else {
 			slog.Debug("docker not reachable; retrying", "err", err, "every", retry)
 		}

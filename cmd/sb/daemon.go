@@ -36,6 +36,7 @@ type daemonOptions struct {
 	httpsAddrs     []string
 	healthInterval time.Duration
 	useHelper      bool // ask the privileged helper for the HTTP listeners first
+	useHelperDNS   bool // ask the privileged helper for the DNS sockets first
 	// dockerConnect discovers containers; nil disables Docker routes.
 	dockerConnect func(context.Context) (docker.Client, string, error)
 	ready         func() // called once the control socket is accepting; for tests
@@ -63,7 +64,10 @@ with redirect_https are redirected to HTTPS while HTTPS is up.
 
 Unless --http-addr or --https-addr is given, the daemon first asks the
 privileged helper installed by 'sb setup' for the port 80 and 443 listeners,
-and binds any it did not get itself.
+and binds any it did not get itself. Likewise, unless --dns-addr is given, it
+asks the helper for DNS sockets on the privileged port split DNS points at
+(macOS and Linux), so no other user can take that port first; without the
+helper it binds --dns-addr itself.
 
 With --docker (the default), running containers that publish a TCP port get
 routes too: <container>.<tld>, or <service>.<project>.<tld> for Compose. They
@@ -79,6 +83,7 @@ announced over multicast DNS on the loopback interface; see 'sb tld'.`,
 				opts.dockerConnect = docker.Connect
 			}
 			opts.useHelper = !cmd.Flags().Changed("http-addr") && !cmd.Flags().Changed("https-addr")
+			opts.useHelperDNS = !cmd.Flags().Changed("dns-addr")
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			return runDaemon(ctx, opts)
@@ -117,7 +122,7 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 		dashHosts[i] = dashboard.Host(t)
 	}
 	// The CA comes first: the API reports on it. Without one, HTTPS stays off.
-	issuer, ca, caErr := newIssuer(caTLDs, px)
+	issuer, ca, caErr := newIssuer(caTLDs, px, dashHosts)
 	hosts := &hostsSyncer{Proxy: px, next: make(chan []config.Route, 1), extra: dashHosts}
 	backends := opts.mdnsBackends
 	if backends == nil {
@@ -172,7 +177,7 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 		_ = ctl.Close()
 		return err
 	}
-	if err := d.Listen(); err != nil {
+	if err := listenDNS(ctx, d, opts); err != nil {
 		slog.Warn("dns server not listening", "err", err)
 		svc.SetDNS(api.Listener{Addrs: []string{opts.dnsAddr}, Error: err.Error()})
 	} else {
@@ -240,6 +245,22 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 	return err
 }
 
+// listenDNS gets d its sockets: from the helper when allowed, else by
+// binding opts.dnsAddr.
+func listenDNS(ctx context.Context, d *dns.Server, opts daemonOptions) error {
+	if opts.useHelperDNS {
+		pc, ln, err := platform.Current().HelperDNS(ctx)
+		if err == nil {
+			slog.Info("dns sockets received from helper")
+			return d.Use(pc, ln)
+		}
+		if !errors.Is(err, errors.ErrUnsupported) {
+			slog.Info("helper has no DNS sockets; binding the DNS port directly", "err", err)
+		}
+	}
+	return d.Listen()
+}
+
 type listenerSet struct {
 	lns []net.Listener
 	err error
@@ -278,8 +299,9 @@ func proxyListeners(ctx context.Context, opts daemonOptions) (plain, secure list
 
 // newIssuer loads or creates the local CA and serves names that only match
 // through a wildcard route with a wildcard certificate for their parent, so
-// one certificate covers all siblings.
-func newIssuer(tlds []string, px proxy.Proxy) (*pki.Issuer, *pki.CA, error) {
+// one certificate covers all siblings. Names that no route (or reserved
+// host) serves get certificates at a limited rate, kept only in memory.
+func newIssuer(tlds []string, px proxy.Proxy, reserved []string) (*pki.Issuer, *pki.CA, error) {
 	dir, err := pki.DefaultDir()
 	if err != nil {
 		return nil, nil, err
@@ -293,14 +315,40 @@ func newIssuer(tlds []string, px proxy.Proxy) (*pki.Issuer, *pki.CA, error) {
 			slog.Warn("local CA does not cover a TLD; run 'sb doctor'", "tld", tld)
 		}
 	}
-	return pki.NewIssuer(ca, pki.IssuerOptions{NameFor: func(host string) string {
-		if _, wildcard, ok := px.Lookup(host); ok && wildcard {
-			if _, parent, _ := strings.Cut(host, "."); strings.Contains(parent, ".") {
-				return "*." + parent
+	if ca.Legacy {
+		slog.Warn("local CA is from an earlier version and not limited to TLS server certificates; run 'sb trust' to replace it")
+	}
+	issuer := pki.NewIssuer(ca, pki.IssuerOptions{
+		NameFor: func(host string) string {
+			if _, wildcard, ok := px.Lookup(host); ok && wildcard {
+				if _, parent, _ := strings.Cut(host, "."); strings.Contains(parent, ".") {
+					return "*." + parent
+				}
 			}
+			return host
+		},
+		Routed: routedName(px, reserved),
+	})
+	go issuer.PruneLeaves()
+	return issuer, ca, nil
+}
+
+// routedName reports whether a route or reserved host serves host exactly,
+// or through a wildcard one label below its base: a wildcard route also
+// matches deeper names, but each distinct parent of those is a new
+// certificate, so they count as unrouted and are rate-limited.
+func routedName(px proxy.Proxy, reserved []string) func(string) bool {
+	return func(host string) bool {
+		if slices.Contains(reserved, host) {
+			return true
 		}
-		return host
-	}}), ca, nil
+		r, wildcard, ok := px.Lookup(host)
+		if !ok || !wildcard {
+			return ok
+		}
+		_, parent, _ := strings.Cut(host, ".")
+		return parent == r.Name
+	}
 }
 
 // caInfo reports the CA for GET /v1/ca. Trust is checked by verifying a

@@ -5,16 +5,29 @@ The daemon (`sb daemon`) serves a JSON API over HTTP on a Unix socket at
 GUI use this API. They never edit the config file or system files directly.
 
 - **Access:** the socket has mode `0600`, so only the user who runs the daemon can
-  connect. There is no other authentication.
+  connect. There is no other authentication. It is created in a private temporary
+  directory, chmodded, then moved into place, so it never exists with looser
+  permissions.
+- **Trusting the socket:** whoever can write to the socket's directory could replace the
+  socket and pose as the daemon, which hands out dashboard sign-in links. So the daemon
+  refuses to start, and the CLI refuses to connect, unless the directory (and the
+  target, if it is a symlink) belongs to you and no other user can write to it; the CLI
+  also requires the socket itself to be yours. The error says what to do: `chmod 700
+  <dir>`, or point `SWITCHBOARD_CONFIG_DIR` at a directory of your own.
 - **One daemon at a time:** if a live daemon already owns the socket, a second daemon
   exits with an error. If the file is only left over from a crash, it is replaced.
 - **Windows:** a named pipe, `\\.\pipe\switchboard-<id>`, instead of the socket. `<id>`
-  is the first 8 bytes, in hex, of SHA-256 over the user's SID and the config dir, so
-  each user (and each `SWITCHBOARD_CONFIG_DIR`) gets its own pipe without the name revealing the
-  SID. Its DACL (`D:P(A;;GA;;;<your SID>)`) lets only you connect, not even
-  administrators. The daemon creates it with `FILE_FLAG_FIRST_PIPE_INSTANCE`, so it
-  can't join a pipe someone else made first. Clients check that the process serving the
-  pipe runs as the same user, and refuse otherwise.
+  is the first 8 bytes, in hex, of SHA-256 over the user's SID, the config dir and a
+  random value stored in `<config dir>\pipe-id` (created on first use by the daemon or
+  the CLI). So each user (and each `SWITCHBOARD_CONFIG_DIR`) gets its own pipe, the name
+  reveals none of them, and no other account can work the name out and create the pipe
+  before the daemon does. Its DACL (`D:P(A;;GA;;;<your SID>)`) lets only you connect,
+  not even administrators. The daemon creates it with `FILE_FLAG_FIRST_PIPE_INSTANCE`,
+  so it can't join a pipe someone else made first. Clients check that the process
+  serving the pipe runs as the same user, and refuse otherwise. If another account
+  holds the name anyway (it saw the pipe while the daemon ran), the daemon and the CLI
+  name that account, and `sb doctor` says to delete `pipe-id` so the next start picks
+  a new name.
 - **Versioning:** all paths are under `/v1`. Errors are `{"error": "<message>"}` with a
   4xx or 5xx status.
 
@@ -137,8 +150,9 @@ rather than slowing down route changes, so reload `GET /v1/status` after reconne
 ## Daemon startup
 
 `sb daemon` loads `routes.toml`, then claims the socket, then starts the DNS server
-(`--dns-addr`, default `127.0.0.1:15353`, or `127.0.0.1:53` on Windows, since NRPT
-rules can't name a port), the HTTPS proxy (`--https-addr`, default
+(on macOS and Linux, sockets on `127.0.0.1:535` from the helper; without it,
+`--dns-addr`, default `127.0.0.1:15353`; on Windows `127.0.0.1:53`, since NRPT rules
+can't name a port), the HTTPS proxy (`--https-addr`, default
 `127.0.0.1:443,[::1]:443`) and the HTTP proxy (`--http-addr`, default
 `127.0.0.1:80,[::1]:80`). `proxy` in the status is plain HTTP; `https` is HTTPS.
 

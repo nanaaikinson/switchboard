@@ -18,7 +18,7 @@ All four take the same flags:
 
 | # | Change | Owner and mode | Removed by `sb uninstall` |
 | --- | --- | --- | --- |
-| 1 | `/etc/resolver/test` sends `.test` lookups to `127.0.0.1` port `15353` | root:wheel 0644 | Yes, but only if it still starts with the Switchboard marker line |
+| 1 | `/etc/resolver/test` sends `.test` lookups to `127.0.0.1` port `535`, which the helper binds for the daemon | root:wheel 0644 | Yes, but only if it still starts with the Switchboard marker line |
 | 2 | `/Library/PrivilegedHelperTools/dev.switchboard.helper`: a copy of `sb` | root:wheel 0755 | Yes |
 | 3 | `/Library/LaunchDaemons/dev.switchboard.helper.plist`, loaded into the `system` domain | root:wheel 0644 | Yes, unloaded first |
 | 4 | `~/Library/LaunchAgents/dev.switchboard.daemon.plist`, which runs `sb daemon` at login, loaded into `gui/<uid>` | you, 0644 | Yes, unloaded first |
@@ -42,7 +42,7 @@ The resolver file:
 ```
 # Managed by Switchboard; removed by 'sb uninstall'
 nameserver 127.0.0.1
-port 15353
+port 535
 ```
 
 **The marker line** is how uninstall knows the file is Switchboard's. Other local DNS
@@ -52,21 +52,31 @@ tools also write `nameserver 127.0.0.1` files, and those are never removed. If
 ## Security design
 
 - **The helper does very little.** `sb helper serve` binds ports 80 and 443 on
-  `127.0.0.1` and `[::1]`, and hands the listening sockets to your daemon. It never
+  `127.0.0.1` and `[::1]`, and the DNS port 535 (UDP and TCP) on `127.0.0.1`, and hands
+  the sockets to your daemon. Because they are privileged ports, no other user can
+  bind them first. It never
   accepts connections itself. `sb helper install` and `sb helper uninstall` write and
   remove only the files listed above. `sb helper trust` and `sb helper untrust` only
   change the CA's entry in the System keychain.
-- **Root only trusts a constrained CA.** `sb helper trust` opens the certificate without
-  following symlinks and refuses anything that isn't a self-signed CA whose critical
-  name constraints allow only single-label TLDs and exclude every IP address. So even a
-  tampered file in your config dir can't make root trust a CA for real domains.
+- **Root only trusts a constrained CA, and only the one you confirmed.** `sb helper
+  trust` opens the certificate without following symlinks and refuses anything that
+  isn't a self-signed Switchboard CA limited to TLS server certificates, whose critical
+  name constraints allow only TLDs reserved for local use (`.test`, `.local`, ...) and
+  exclude every IP address. It must also carry your uid and have the SHA-256
+  fingerprint `sb trust` showed you (passed as `--ca-fingerprint`). So a process that
+  swaps the file in your config dir while you confirm can't make root trust its CA,
+  let alone one for real domains.
+- **Root's temp files go in `/tmp`.** The helper sets `TMPDIR=/tmp` (sticky, so no one
+  else can replace its files) before writing the copies of the certificate that
+  `security` reads.
 - **Trust changes run in your Terminal, not in launchd.** macOS asks for approval before
   changing admin trust settings, and refuses without a user session. That's why
   trusting goes through `sudo sb helper trust`, like setup, and not through the helper's
   socket. NSS databases are changed as you, so root never writes into your Firefox
   profile.
 - **Only you can talk to the helper.** Its socket is created root-owned, then chowned
-  to your uid with mode 0600, inside a root-owned 0755 directory. It accepts exactly
+  to your uid with mode 0600, inside a root-owned 0755 directory, and the helper also
+  checks each caller's uid (`LOCAL_PEERCRED`, `SO_PEERCRED` on Linux). It accepts exactly
   one request, `{"version":1,"op":"listeners"}`. The socket descriptors are sent with
   `SCM_RIGHTS`.
 - **The root job never runs a binary you can modify.** The LaunchDaemon runs a
@@ -74,13 +84,19 @@ tools also write `nameserver 127.0.0.1` files, and those are never removed. If
   upgrading `sb` to refresh that copy.
 - **Writing into your home as root is guarded.**
   - `~`, `~/Library` and `~/Library/LaunchAgents` must be real directories owned by
-    you, not symlinks.
+    you, not symlinks, checked through the open directory handle.
+  - Every change in your home goes through an `os.Root` opened on it, so no path can
+    lead out of it, even if a directory is swapped for a symlink after it was checked.
   - Files are written to an `O_EXCL` temp file, chowned and chmodded through the open
     handle, then renamed into place, so a symlink at the destination is replaced rather
     than followed.
 - **`sb setup` refuses to run as root,** so it always installs for the real user.
 - **Protocol versions are checked.** If the helper and daemon disagree, the error says
   to re-run `sb setup`.
+- **An out-of-date helper is flagged.** The helper runs its own copy of `sb`, which
+  `sb self-update` doesn't replace. It reports its version, and `sb doctor` fails the
+  helper check until `sb setup` has updated it, so fixes to the privileged part aren't
+  silently missed.
 
 ## How the daemon gets ports 80 and 443
 
@@ -152,7 +168,7 @@ SSH, so that `gui/<uid>` exists.
    sudo launchctl print system/dev.switchboard.helper | grep state; launchctl print gui/$(id -u)/dev.switchboard.daemon | grep state
    ```
 9. `scutil --dns | grep -B1 -A4 'domain   : test'` should show nameserver 127.0.0.1,
-   port 15353. This proves the marker comment line parses.
+   port 535. This proves the marker comment line parses.
 10. `dscacheutil -q host -a name anything.test` should return 127.0.0.1. So should
     `ping -c1 deep.sub.anything.test`.
 11. Check the socket and port 80:

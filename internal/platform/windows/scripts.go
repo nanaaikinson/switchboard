@@ -126,7 +126,14 @@ Start-ScheduledTask -TaskPath ` + path + ` -TaskName ` + name + `
 // on TCP port, or nothing.
 func listenerScript(port int) string {
 	return psPrelude + `$c = Get-NetTCPConnection -State Listen -LocalPort ` + strconv.Itoa(port) + ` -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($c) { $n = (Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue).ProcessName; Write-Output "$($c.OwningProcess)` + "`t" + `$n" }
+if (-not $c) { $c = Get-NetUDPEndpoint -LocalPort ` + strconv.Itoa(port) + ` -ErrorAction SilentlyContinue | Select-Object -First 1 }
+if ($c) {
+  $n = (Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue).ProcessName
+  $u = ''
+  $w = Get-CimInstance Win32_Process -Filter "ProcessId=$($c.OwningProcess)" -ErrorAction SilentlyContinue
+  if ($w) { $o = Invoke-CimMethod -InputObject $w -MethodName GetOwner -ErrorAction SilentlyContinue; if ($o -and $o.ReturnValue -eq 0) { $u = "$($o.Domain)\$($o.User)" } }
+  Write-Output "$($c.OwningProcess)` + "`t" + `$n` + "`t" + `$u"
+}
 `
 }
 

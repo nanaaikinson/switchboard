@@ -27,7 +27,11 @@ func (p *Platform) HelperRunning(ctx context.Context) error {
 	logs := "see 'journalctl -u " + helperUnitName + "' if it keeps failing"
 	switch {
 	case err == nil:
-		return c.Close()
+		_ = c.Close()
+		if p.o.Version == "" {
+			return nil
+		}
+		return posix.CheckHelperBuild(ctx, p.o.HelperSocket, p.o.Version)
 	case errors.Is(err, fs.ErrNotExist):
 		if _, serr := os.Stat(p.fs(helperUnitPath)); serr != nil {
 			return posix.WithFix("Run 'sb setup'.", "not installed (no %s)", helperUnitPath)

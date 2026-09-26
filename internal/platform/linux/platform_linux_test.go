@@ -3,7 +3,6 @@ package linux
 import (
 	"crypto/x509"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,9 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/smallstep/truststore"
-
 	"github.com/nanaaikinson/switchboard/internal/pki"
+	"github.com/nanaaikinson/switchboard/internal/pki/pkitest"
 	"github.com/nanaaikinson/switchboard/internal/platform/posix"
 )
 
@@ -82,10 +80,10 @@ func newEnv(t *testing.T, sys *fakeSystem) *env {
 	}
 	e.p = New(Options{
 		UID: os.Getuid(), Home: e.home, SbPath: "/opt/bin/sb", Root: e.root, Run: sys.run,
-		Chown:   func(*os.File, int, int) error { return nil },
-		Trust:   func(*x509.Certificate) error { t.Error("unexpected trust change"); return errors.New("disabled") },
-		Untrust: func(*x509.Certificate) error { t.Error("unexpected trust change"); return errors.New("disabled") },
-		NSS:     func() (posix.NSSStore, error) { t.Error("unexpected NSS access"); return nil, errors.New("disabled") },
+		Chown:        func(*os.File, int, int) error { return nil },
+		Anchors:      "/usr/local/share/ca-certificates/%s.crt",
+		TrustCommand: []string{"update-ca-certificates"},
+		NSS:          func() (posix.NSSStore, error) { t.Error("unexpected NSS access"); return nil, errors.New("disabled") },
 	})
 	return e
 }
@@ -162,6 +160,27 @@ func TestResolvedMode(t *testing.T) {
 	}
 	if e.exists(path) || strings.Join(e.sys.mutating(), "; ") != "systemctl restart systemd-resolved" {
 		t.Errorf("after remove: exists=%v calls=%v", e.exists(path), e.sys.mutating())
+	}
+	if e.exists("etc/systemd/resolved.conf.d") {
+		t.Error("left the drop-in dir setup made")
+	}
+
+	// A dir that was there before setup (NetworkManager ships an empty
+	// dnsmasq.d) stays.
+	if err := os.MkdirAll(filepath.Join(e.root, "etc/systemd/resolved.conf.d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.p.InstallResolver("test", 15353); err != nil {
+		t.Fatal(err)
+	}
+	if e.exists("etc/systemd/resolved.conf.d/" + createdMarker) {
+		t.Error("marked a dir setup didn't make")
+	}
+	if err := e.p.RemoveResolver("test"); err != nil {
+		t.Fatal(err)
+	}
+	if !e.exists("etc/systemd/resolved.conf.d") {
+		t.Error("removed a dir setup didn't make")
 	}
 	e.sys.calls = nil
 	if err := e.p.RemoveResolver("test"); err != nil || len(e.sys.mutating()) != 0 {
@@ -428,30 +447,83 @@ func TestTrust(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var trusted, untrusted int
+	uid := os.Getuid()
 	sys := &fakeSystem{} // never run real commands: they would edit the trust store
-	p := New(Options{
-		Run:     sys.run,
-		Trust:   func(*x509.Certificate) error { trusted++; return nil },
-		Untrust: func(*x509.Certificate) error { untrusted++; return nil },
-	})
-	if err := p.TrustCA(ca.CertPath()); err != nil || trusted != 1 {
-		t.Errorf("trust: %v, %d", err, trusted)
+	e := newEnv(t, sys)
+	anchors := filepath.Join(e.root, "usr/local/share/ca-certificates")
+	if err := os.MkdirAll(anchors, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if err := p.UntrustCA(ca.CertPath()); err != nil || untrusted != 1 {
-		t.Errorf("untrust: %v, %d", err, untrusted)
+	write := func(name string, c *x509.Certificate) string {
+		path := filepath.Join(anchors, name)
+		if err := os.WriteFile(path, pkitest.PEM(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
 	}
-	wantFresh := strings.HasPrefix(truststore.SystemTrustFilename, "/usr/local/share/ca-certificates/")
-	if gotFresh := strings.Join(sys.calls, ";") == "update-ca-certificates --fresh"; gotFresh != wantFresh {
-		t.Errorf("calls %v; want update-ca-certificates --fresh: %v", sys.calls, wantFresh)
+	older := write("switchboard-1.crt", pkitest.CA(t, strconv.Itoa(uid), nil))
+	legacy := write("Switchboard_Local_CA_2.crt", pkitest.CA(t, "", func(c *x509.Certificate) {
+		c.ExtKeyUsage = nil
+		c.Subject.OrganizationalUnit = []string{"me@laptop"}
+	}))
+	others := write("switchboard-3.crt", pkitest.CA(t, strconv.Itoa(uid+1), nil))
+	foreign := write("corp-root.crt", pkitest.CA(t, strconv.Itoa(uid), func(c *x509.Certificate) { c.Subject.CommonName = "Corp Root" }))
+	e.p.o.User = "me"
+
+	if err := e.p.TrustCA(ca.CertPath(), ca.Fingerprint()); err != nil {
+		t.Fatal(err)
 	}
-	if err := p.TrustCA(filepath.Join(t.TempDir(), "missing.pem")); err == nil || trusted != 1 {
-		t.Errorf("missing file: %v", err)
+	mine := filepath.Join(anchors, "switchboard-"+ca.Cert.SerialNumber.Text(16)+".crt")
+	if got, err := os.ReadFile(mine); err != nil || string(got) != string(pkitest.PEM(ca.Cert)) {
+		t.Errorf("anchor %s: %v", mine, err)
 	}
-	p = New(Options{Run: sys.run, Trust: func(*x509.Certificate) error { return fmt.Errorf("wrap: %w", errUnsupportedBundle) }})
-	if err := p.TrustCA(ca.CertPath()); err == nil || !strings.Contains(err.Error(), "by hand") {
+	for path, want := range map[string]bool{older: false, legacy: false, others: true, foreign: true} {
+		if _, err := os.Stat(path); (err == nil) != want {
+			t.Errorf("%s exists: %v, want %v", filepath.Base(path), err == nil, want)
+		}
+	}
+	if strings.Join(sys.calls, ";") != "update-ca-certificates" {
+		t.Errorf("calls %v", sys.calls)
+	}
+
+	// The anchor name never comes from the subject, which the user controls.
+	evil := pkitest.CA(t, strconv.Itoa(uid), func(c *x509.Certificate) { c.Subject.CommonName = "../../../../tmp/x" })
+	for name, tc := range map[string]struct{ path, fp string }{
+		"missing":        {filepath.Join(t.TempDir(), "missing.pem"), ca.Fingerprint()},
+		"wrong print":    {ca.CertPath(), pki.Fingerprint(evil)},
+		"traversing CN":  {pkitest.Write(t, evil), pki.Fingerprint(evil)},
+		"another user's": {others, ""},
+	} {
+		if err := e.p.TrustCA(tc.path, tc.fp); err == nil {
+			t.Errorf("%s: trusted", name)
+		}
+	}
+
+	sys.calls = nil
+	if err := os.Remove(ca.CertPath()); err != nil { // the CA file is gone: untrust still finds it
+		t.Fatal(err)
+	}
+	if err := e.p.UntrustCA(""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(mine); err == nil {
+		t.Error("CA still trusted after untrust")
+	}
+	for _, path := range []string{others, foreign} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("untrust removed %s", filepath.Base(path))
+		}
+	}
+	if strings.Join(sys.calls, ";") != "update-ca-certificates --fresh" {
+		t.Errorf("calls %v; want update-ca-certificates --fresh", sys.calls)
+	}
+	sys.calls = nil
+	if err := e.p.UntrustCA(""); err != nil || len(sys.calls) != 0 {
+		t.Errorf("untrust with nothing trusted: %v, calls %v", err, sys.calls)
+	}
+
+	e.p.o.Anchors, e.p.o.TrustCommand = "", nil
+	if err := e.p.TrustCA(pkitest.Write(t, ca.Cert), ca.Fingerprint()); err == nil || !strings.Contains(err.Error(), "by hand") {
 		t.Errorf("no bundle: %v", err)
 	}
 }
-
-var errUnsupportedBundle = truststore.ErrNotSupported

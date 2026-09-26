@@ -22,15 +22,18 @@ func (s *Service) SetDocker(st DockerStatus, routes []DockerRoute) {
 	defer s.mu.Unlock()
 	all, active, conflicts := s.merge(s.routes, routes)
 	if err := s.opts.Proxy.SetRoutes(all); err != nil {
-		// Never let container routes break the config routes.
-		slog.Warn("docker routes rejected", "err", err)
+		// Never let container routes break the config routes. The error
+		// names routes, so it's logged at debug only; sb ls shows it.
+		slog.Warn("docker routes rejected; see 'sb ls' for why", "containers", len(routes))
+		slog.Debug("docker routes rejected", "err", err)
 		for _, r := range routes {
 			conflicts = append(conflicts, DockerSkip{Container: r.Container, Reason: err.Error()})
 		}
 		routes, active = nil, nil
-		all = s.routes
+		all, _, _ = s.merge(s.routes, nil)
 		if err := s.opts.Proxy.SetRoutes(all); err != nil {
-			slog.Error("restore config routes", "err", err)
+			slog.Error("restore config routes failed; restart the daemon")
+			slog.Debug("restore config routes", "err", err)
 		}
 	}
 	old := s.active
@@ -42,27 +45,41 @@ func (s *Service) SetDocker(st DockerStatus, routes []DockerRoute) {
 
 // merge returns the config routes plus the Docker routes that don't claim a
 // reserved name, or a name or wildcard a config route (or an earlier Docker
-// route) already has.
+// route) already has. Nor may a Docker route fall under a config route's
+// wildcard: the proxy prefers exact names, so it would take those names
+// from the config route. Config routes with reserved names are left out.
 func (s *Service) merge(cfg []config.Route, docker []DockerRoute) (all []config.Route, active []DockerRoute, conflicts []DockerSkip) {
 	used := map[string]string{}
-	for _, n := range s.opts.Reserved {
-		used[n] = "the Switchboard dashboard"
-	}
+	var wildcards []string // bases of the config routes' wildcards
 	for _, r := range cfg {
+		if s.reservedBy(r.Name) != "" {
+			continue // kept in routes.toml from an older version, never served
+		}
+		all = append(all, r)
 		for _, c := range claims(r) {
 			used[c] = "a route in routes.toml"
-		}
-	}
-	all = slices.Clone(cfg)
-	for _, d := range docker {
-		var owner string
-		for _, c := range claims(d.Route) {
-			if used[c] != "" {
-				owner = used[c]
+			if base, ok := strings.CutPrefix(c, "*."); ok {
+				wildcards = append(wildcards, base)
 			}
 		}
-		if owner != "" {
-			conflicts = append(conflicts, DockerSkip{Container: d.Container, Reason: fmt.Sprintf("%s is taken by %s", d.Name, owner)})
+	}
+	for _, d := range docker {
+		var reason string
+		for _, c := range claims(d.Route) {
+			if used[c] != "" {
+				reason = fmt.Sprintf("%s is taken by %s; change the container's dev.switchboard.hosts label", d.Name, used[c])
+			}
+		}
+		base := strings.TrimPrefix(strings.ToLower(d.Name), "*.")
+		if i := slices.IndexFunc(wildcards, func(w string) bool { return base == w || under(base, w) }); i >= 0 && reason == "" {
+			reason = fmt.Sprintf("%s is under *.%s, a wildcard route in routes.toml, which containers can't override; change the container's dev.switchboard.hosts label",
+				d.Name, wildcards[i])
+		}
+		if s.reservedBy(d.Name) != "" {
+			reason = fmt.Sprintf("%s is taken by the Switchboard dashboard; change the container's dev.switchboard.hosts label", d.Name)
+		}
+		if reason != "" {
+			conflicts = append(conflicts, DockerSkip{Container: d.Container, Reason: reason})
 			continue
 		}
 		for _, c := range claims(d.Route) {

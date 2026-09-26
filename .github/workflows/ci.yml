@@ -81,12 +81,14 @@ jobs:
       - name: Shellcheck shell scripts
         run: |
           shellcheck --version
-          shellcheck --shell=sh --severity=style install/install.sh install/packaging/*.sh test/e2e/linux/*.sh .github/scripts/*.sh test/release/*.sh app/tray/scripts/*.sh
+          shellcheck --shell=sh --severity=style install/install.sh install/packaging/*.sh test/install/*.sh test/e2e/linux/*.sh .github/scripts/*.sh test/release/*.sh app/tray/scripts/*.sh
 
-      - name: Test the release scripts
+      - name: Test install.sh and the release scripts
         run: |
+          sh test/install/install-test.sh
           sh test/release/next-version-test.sh
           sh test/release/winget-manifests-test.sh
+          sh test/release/verify-release-sums-test.sh
 
   dashboard:
     name: dashboard

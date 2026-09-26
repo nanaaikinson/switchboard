@@ -27,8 +27,8 @@ func (s *Service) Apply(req ApplyRequest) (ApplyResult, error) {
 		if !config.ValidHostname(r.Name) {
 			return ApplyResult{}, fmt.Errorf("%w: name %q must be a hostname like myapp or *.myapp", ErrInvalid, r.Name)
 		}
-		if r.Port < 1 || r.Port > 65535 {
-			return ApplyResult{}, fmt.Errorf("%w: %s: port %d out of range 1-65535", ErrInvalid, r.Name, r.Port)
+		if err := checkPort(r.Port); err != nil {
+			return ApplyResult{}, fmt.Errorf("%w: %s: %w", ErrInvalid, r.Name, err)
 		}
 		if slices.ContainsFunc(want, func(x config.Route) bool { return x.Name == r.Name }) {
 			return ApplyResult{}, fmt.Errorf("%w: %s is listed twice in %s", ErrInvalid, r.Name, req.File)
@@ -41,9 +41,6 @@ func (s *Service) Apply(req ApplyRequest) (ApplyResult, error) {
 	var res ApplyResult
 	var next, mine []config.Route
 	owners := map[string]string{} // claim -> who has it
-	for _, n := range s.opts.Reserved {
-		owners[n] = "the Switchboard dashboard"
-	}
 	for _, r := range s.routes {
 		if r.File == req.File {
 			mine = append(mine, r)
@@ -67,6 +64,9 @@ func (s *Service) Apply(req ApplyRequest) (ApplyResult, error) {
 			if owners[c] != "" {
 				owner = owners[c]
 			}
+		}
+		if s.reservedBy(r.Name) != "" {
+			owner = "the Switchboard dashboard"
 		}
 		if owner != "" {
 			res.Conflicts = append(res.Conflicts, Conflict{Name: r.Name, Owner: owner})

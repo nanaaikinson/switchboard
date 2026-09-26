@@ -14,6 +14,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -21,6 +23,9 @@ import (
 
 // ErrNoHelper means the privileged helper is not installed or not running.
 var ErrNoHelper = errors.New("privileged helper not available")
+
+// ErrOldHelper means the helper is from an earlier version that lacks an op.
+var ErrOldHelper = errors.New("privileged helper is out of date")
 
 // helperProtocol is bumped on incompatible changes between helper and daemon.
 const helperProtocol = 1
@@ -30,14 +35,15 @@ const helperIOTimeout = 5 * time.Second
 // Request is one line of JSON from the daemon to the helper.
 type Request struct {
 	Version int      `json:"version"`
-	Op      string   `json:"op"`              // "listeners" or "hosts"
+	Op      string   `json:"op"`              // "listeners", "dns", "hosts" or "version"
 	Names   []string `json:"names,omitempty"` // for "hosts"
 }
 
-// Response is the helper's one-line JSON answer. For "listeners", the
-// sockets travel alongside it as SCM_RIGHTS.
+// Response is the helper's one-line JSON answer. For "listeners" and "dns",
+// the sockets travel alongside it as SCM_RIGHTS.
 type Response struct {
 	Version int      `json:"version"`
+	Build   string   `json:"build,omitempty"` // for "version": the helper's sb version
 	Addrs   []string `json:"addrs,omitempty"`
 	Error   string   `json:"error,omitempty"`
 }
@@ -50,8 +56,14 @@ type Server struct {
 	Socket   string   // Unix socket path
 	UID, GID int      // the only user allowed to connect
 	Addrs    []string // TCP addresses to bind and hand out
+	// DNSAddr is the loopback address the helper binds for the daemon's DNS
+	// server, UDP and TCP, on a privileged port, so no other user can bind
+	// it first and answer lookups. "" refuses the "dns" op.
+	DNSAddr string
 	// Hosts rewrites the hosts-file entries; nil refuses the "hosts" op.
 	Hosts func(names []string) error
+	// Build is the helper's sb version, for the "version" op.
+	Build string
 }
 
 // Serve runs until ctx is done. It listens on a socket that only the user can
@@ -82,8 +94,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	slog.Info("helper listening", "socket", sock, "uid", s.UID)
 
 	go func() { <-ctx.Done(); _ = ln.Close() }()
-	var ports portSet
+	var ports, dns socketSet
 	defer ports.close()
+	defer dns.close()
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -92,13 +105,19 @@ func (s *Server) Serve(ctx context.Context) error {
 			}
 			return fmt.Errorf("helper: accept: %w", err)
 		}
-		s.handle(c.(*net.UnixConn), &ports)
+		s.handle(c.(*net.UnixConn), &ports, &dns)
 	}
 }
 
-func (s *Server) handle(c *net.UnixConn, ports *portSet) {
+func (s *Server) handle(c *net.UnixConn, ports, dns *socketSet) {
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(helperIOTimeout))
+	// The socket's mode and owner already keep others out; checking the
+	// peer's uid as well means a mistake there can't hand them the ports.
+	if uid, err := peerUID(c); err != nil || uid != s.UID && uid != 0 {
+		slog.Warn("helper: refused a connection from another user", "uid", uid, "err", err)
+		return
+	}
 	var req Request
 	line, err := bufio.NewReader(io.LimitReader(c, maxRequest)).ReadBytes('\n')
 	if err == nil {
@@ -112,10 +131,17 @@ func (s *Server) handle(c *net.UnixConn, ports *portSet) {
 	case req.Version != helperProtocol:
 		resp.Error = fmt.Sprintf("protocol version %d, helper speaks %d; re-run 'sb setup'", req.Version, helperProtocol)
 	case req.Op == "listeners":
-		files, resp.Addrs, err = ports.files(s.Addrs)
+		files, resp.Addrs, err = ports.files(func() ([]boundSocket, error) { return bindHTTP(s.Addrs) })
 		if err != nil {
 			resp.Error = err.Error()
 		}
+	case req.Op == "dns" && s.DNSAddr != "":
+		files, resp.Addrs, err = dns.files(func() ([]boundSocket, error) { return bindDNS(s.DNSAddr) })
+		if err != nil {
+			resp.Error = err.Error()
+		}
+	case req.Op == "version":
+		resp.Build = s.Build
 	case req.Op == "hosts" && s.Hosts != nil:
 		if err := s.Hosts(req.Names); err != nil {
 			resp.Error = err.Error()
@@ -141,52 +167,123 @@ func (s *Server) handle(c *net.UnixConn, ports *portSet) {
 		slog.Warn("helper: send listeners", "err", err)
 		return
 	}
-	slog.Info("helper answered", "op", req.Op, "sockets", len(fds), "error", resp.Error)
+	// Errors can name hostnames (from the hosts op), so only at debug level.
+	slog.Info("helper answered", "op", req.Op, "sockets", len(fds), "failed", resp.Error != "")
+	if resp.Error != "" {
+		slog.Debug("helper error", "op", req.Op, "error", resp.Error)
+	}
 }
 
-// portSet binds the HTTP ports once and keeps them for the helper's lifetime.
-type portSet struct {
-	mu  sync.Mutex
-	lns []*net.TCPListener
+// boundSocket is a listening TCP or UDP socket the helper hands out.
+type boundSocket interface {
+	File() (*os.File, error)
+	Close() error
 }
 
-// files returns fresh duplicates of the listening sockets, binding on first use.
-func (s *portSet) files(addrs []string) ([]*os.File, []string, error) {
+func sockAddr(b boundSocket) string {
+	switch b := b.(type) {
+	case net.Listener:
+		return b.Addr().String()
+	case net.PacketConn:
+		return b.LocalAddr().String()
+	}
+	return ""
+}
+
+// socketSet binds a set of sockets once and keeps them for the helper's
+// lifetime.
+type socketSet struct {
+	mu    sync.Mutex
+	socks []boundSocket
+}
+
+// files returns fresh duplicates of the sockets, binding them on first use.
+func (s *socketSet) files(bind func() ([]boundSocket, error)) ([]*os.File, []string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.lns == nil {
-		for _, a := range addrs {
-			ln, err := net.Listen("tcp", a)
-			if err != nil {
-				s.closeLocked()
-				return nil, nil, fmt.Errorf("bind %s: %w; is another web server using it? Run 'sb doctor'", a, err)
-			}
-			s.lns = append(s.lns, ln.(*net.TCPListener))
+	if s.socks == nil {
+		socks, err := bind()
+		if err != nil {
+			return nil, nil, err
 		}
+		s.socks = socks
 	}
-	files := make([]*os.File, 0, len(s.lns))
-	bound := make([]string, 0, len(s.lns))
-	for _, ln := range s.lns {
-		f, err := ln.File()
+	files := make([]*os.File, 0, len(s.socks))
+	bound := make([]string, 0, len(s.socks))
+	for _, b := range s.socks {
+		f, err := b.File()
 		if err != nil {
 			for _, f := range files {
 				_ = f.Close()
 			}
-			return nil, nil, fmt.Errorf("dup listener: %w", err)
+			return nil, nil, fmt.Errorf("dup socket: %w", err)
 		}
 		files = append(files, f)
-		bound = append(bound, ln.Addr().String())
+		bound = append(bound, sockAddr(b))
 	}
 	return files, bound, nil
 }
 
-func (s *portSet) close() { s.mu.Lock(); s.closeLocked(); s.mu.Unlock() }
+func (s *socketSet) close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	closeAll(s.socks)
+	s.socks = nil
+}
 
-func (s *portSet) closeLocked() {
-	for _, ln := range s.lns {
-		_ = ln.Close()
+func closeAll(socks []boundSocket) {
+	for _, b := range socks {
+		_ = b.Close()
 	}
-	s.lns = nil
+}
+
+// bindHTTP binds the proxy's TCP ports.
+func bindHTTP(addrs []string) ([]boundSocket, error) {
+	var socks []boundSocket
+	for _, a := range addrs {
+		ln, err := net.Listen("tcp", a)
+		if err != nil {
+			closeAll(socks)
+			return nil, fmt.Errorf("bind %s: %w; is another web server using it? Run 'sb doctor'", a, err)
+		}
+		socks = append(socks, ln.(*net.TCPListener))
+	}
+	return socks, nil
+}
+
+// bindDNS binds addr for UDP, then TCP. On macOS, where anyone may bind a
+// privileged port on the wildcard address, SO_REUSEADDR lets the helper bind
+// the loopback address anyway if someone did; the more specific socket gets
+// the traffic.
+func bindDNS(addr string) ([]boundSocket, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
+		return nil, fmt.Errorf("dns address %q is not a loopback IP and port", addr)
+	}
+	lc := net.ListenConfig{Control: reuseAddr}
+	pc, err := lc.ListenPacket(context.Background(), "udp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("bind udp %s: %w; is another DNS server using it? Run 'sb doctor'", addr, err)
+	}
+	ln, err := lc.Listen(context.Background(), "tcp", addr)
+	if err != nil {
+		_ = pc.Close()
+		return nil, fmt.Errorf("bind tcp %s: %w; is another DNS server using it? Run 'sb doctor'", addr, err)
+	}
+	return []boundSocket{pc.(*net.UDPConn), ln.(*net.TCPListener)}, nil
+}
+
+func reuseAddr(_, _ string, c syscall.RawConn) error {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	var serr error
+	if err := c.Control(func(fd uintptr) {
+		serr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+	}); err != nil {
+		return err
+	}
+	return serr
 }
 
 // dial connects to the helper and sends req.
@@ -205,6 +302,43 @@ func dial(ctx context.Context, socket string, req Request) (*net.UnixConn, error
 		return nil, fmt.Errorf("helper: send request: %w", err)
 	}
 	return c, nil
+}
+
+// HelperBuild asks the helper which version of sb it runs. It returns an
+// error matching ErrOldHelper for a helper from before it could say.
+func HelperBuild(ctx context.Context, socket string) (string, error) {
+	c, err := dial(ctx, socket, Request{Op: "version"})
+	if err != nil {
+		return "", err
+	}
+	defer c.Close()
+	var resp Response
+	if err := json.NewDecoder(io.LimitReader(c, maxRequest)).Decode(&resp); err != nil {
+		return "", fmt.Errorf("helper: decode response: %w", err)
+	}
+	switch {
+	case strings.HasPrefix(resp.Error, "unknown op "):
+		return "", ErrOldHelper
+	case resp.Error != "":
+		return "", fmt.Errorf("helper: %s", resp.Error)
+	}
+	return resp.Build, nil
+}
+
+// CheckHelperBuild reports, with a fix, if the helper doesn't run sb want.
+// The root helper runs its own copy of sb, which only 'sb setup' updates, so
+// after an upgrade it can miss fixes to the privileged part.
+func CheckHelperBuild(ctx context.Context, socket, want string) error {
+	build, err := HelperBuild(ctx, socket)
+	switch {
+	case errors.Is(err, ErrOldHelper):
+		return WithFix("Re-run 'sb setup' to update it.", "running, but from an earlier version of sb than %s", want)
+	case err != nil:
+		return err
+	case build != want:
+		return WithFix("Re-run 'sb setup' to update it.", "running sb %s, but this is sb %s", build, want)
+	}
+	return nil
 }
 
 // SyncHosts asks the helper to set the hosts-file entries to names.
@@ -227,7 +361,52 @@ func SyncHosts(ctx context.Context, socket string, names []string) error {
 // Listeners asks the helper for the listening sockets. It returns
 // ErrNoHelper if the helper socket is missing or refuses the connection.
 func Listeners(ctx context.Context, socket string) ([]net.Listener, error) {
-	c, err := dial(ctx, socket, Request{Op: "listeners"})
+	files, err := receive(ctx, socket, "listeners")
+	if err != nil {
+		return nil, err
+	}
+	defer closeFiles(files) // net.FileListener dups; the originals are ours to close
+	lns := make([]net.Listener, 0, len(files))
+	for _, f := range files {
+		ln, err := net.FileListener(f)
+		if err != nil {
+			for _, l := range lns {
+				_ = l.Close()
+			}
+			return nil, fmt.Errorf("helper: use received socket: %w", err)
+		}
+		lns = append(lns, ln)
+	}
+	return lns, nil
+}
+
+// DNSSockets asks the helper for the DNS server's UDP and TCP sockets. It
+// returns ErrNoHelper if there is no helper, and an error saying to re-run
+// 'sb setup' if the helper is from a version that doesn't bind DNS.
+func DNSSockets(ctx context.Context, socket string) (net.PacketConn, net.Listener, error) {
+	files, err := receive(ctx, socket, "dns")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer closeFiles(files)
+	if len(files) != 2 {
+		return nil, nil, fmt.Errorf("helper sent %d DNS sockets, want 2", len(files))
+	}
+	pc, err := net.FilePacketConn(files[0])
+	if err != nil {
+		return nil, nil, fmt.Errorf("helper: use received UDP socket: %w", err)
+	}
+	ln, err := net.FileListener(files[1])
+	if err != nil {
+		_ = pc.Close()
+		return nil, nil, fmt.Errorf("helper: use received TCP socket: %w", err)
+	}
+	return pc, ln, nil
+}
+
+// receive sends op and returns the sockets that came with the answer.
+func receive(ctx context.Context, socket, op string) ([]*os.File, error) {
+	c, err := dial(ctx, socket, Request{Op: op})
 	if err != nil {
 		return nil, err
 	}
@@ -245,11 +424,12 @@ func Listeners(ctx context.Context, socket string) ([]net.Listener, error) {
 	}
 	files := make([]*os.File, len(fds))
 	for i, fd := range fds {
-		files[i] = os.NewFile(uintptr(fd), "helper-listener")
+		files[i] = os.NewFile(uintptr(fd), "helper-socket")
 	}
+	ok := false
 	defer func() {
-		for _, f := range files {
-			_ = f.Close() // net.FileListener dups; the originals are ours to close
+		if !ok {
+			closeFiles(files)
 		}
 	}()
 
@@ -268,24 +448,23 @@ func Listeners(ctx context.Context, socket string) ([]net.Listener, error) {
 	if resp.Version != helperProtocol {
 		return nil, fmt.Errorf("helper speaks protocol %d, daemon %d; re-run 'sb setup'", resp.Version, helperProtocol)
 	}
+	if strings.HasPrefix(resp.Error, "unknown op ") {
+		return nil, fmt.Errorf("%w: the helper is from an earlier version; re-run 'sb setup'", ErrOldHelper)
+	}
 	if resp.Error != "" {
 		return nil, fmt.Errorf("helper: %s", resp.Error)
 	}
 	if len(files) != len(resp.Addrs) || len(files) == 0 {
 		return nil, fmt.Errorf("helper sent %d sockets for %d addresses", len(files), len(resp.Addrs))
 	}
-	lns := make([]net.Listener, 0, len(files))
+	ok = true
+	return files, nil
+}
+
+func closeFiles(files []*os.File) {
 	for _, f := range files {
-		ln, err := net.FileListener(f)
-		if err != nil {
-			for _, l := range lns {
-				_ = l.Close()
-			}
-			return nil, fmt.Errorf("helper: use received socket: %w", err)
-		}
-		lns = append(lns, ln)
+		_ = f.Close()
 	}
-	return lns, nil
 }
 
 func parseRights(oob []byte) ([]int, error) {

@@ -3,6 +3,7 @@ package windows
 import (
 	"bytes"
 	"crypto/x509"
+	"encoding/asn1"
 	"errors"
 	"fmt"
 	"math"
@@ -43,7 +44,63 @@ func (localMachineRoot) Add(cert *x509.Certificate) error {
 		return fmt.Errorf("parse certificate: %w", err)
 	}
 	defer windows.CertFreeCertificateContext(ctx) //nolint:errcheck // freeing
-	return windows.CertAddCertificateContextToStore(store, ctx, windows.CERT_STORE_ADD_REPLACE_EXISTING, nil)
+	var added *windows.CertContext
+	if err := windows.CertAddCertificateContextToStore(store, ctx, windows.CERT_STORE_ADD_REPLACE_EXISTING, &added); err != nil {
+		return err
+	}
+	defer windows.CertFreeCertificateContext(added) //nolint:errcheck // freeing
+	return setServerAuthOnly(added)
+}
+
+// serverAuthEKU is the DER of an enhanced key usage list holding only TLS
+// server authentication.
+var serverAuthEKU = func() []byte {
+	b, err := asn1.Marshal([]asn1.ObjectIdentifier{{1, 3, 6, 1, 5, 5, 7, 3, 1}})
+	if err != nil {
+		panic(err)
+	}
+	return b
+}()
+
+var procCertSetCertificateContextProperty = windows.NewLazySystemDLL("crypt32.dll").NewProc("CertSetCertificateContextProperty")
+
+// certEnhKeyUsagePropID is CERT_ENHKEY_USAGE_PROP_ID.
+const certEnhKeyUsagePropID = 9
+
+// setServerAuthOnly limits what Windows trusts the stored root for to TLS
+// server authentication, on top of the CA's own EKU extension.
+func setServerAuthOnly(ctx *windows.CertContext) error {
+	blob := windows.DataBlob{Size: uint32(len(serverAuthEKU)), Data: &serverAuthEKU[0]}                                                             //nolint:gosec // G115: a few bytes
+	r, _, err := procCertSetCertificateContextProperty.Call(uintptr(unsafe.Pointer(ctx)), certEnhKeyUsagePropID, 0, uintptr(unsafe.Pointer(&blob))) //nolint:gosec // G103: Win32 call
+	if r == 0 {
+		return fmt.Errorf("limit the CA to TLS server authentication: %w", err)
+	}
+	return nil
+}
+
+// List returns the certificates in the store that parse.
+func (localMachineRoot) List() ([]*x509.Certificate, error) {
+	store, err := openLocalMachineRoot()
+	if err != nil {
+		return nil, err
+	}
+	defer windows.CertCloseStore(store, 0) //nolint:errcheck // closing
+	var out []*x509.Certificate
+	var prev *windows.CertContext
+	for {
+		ctx, err := windows.CertEnumCertificatesInStore(store, prev)
+		if err != nil {
+			if errors.Is(err, windows.Errno(windows.CRYPT_E_NOT_FOUND)) {
+				return out, nil
+			}
+			return out, err
+		}
+		raw := unsafe.Slice(ctx.EncodedCert, ctx.Length) //nolint:gosec // G103: the context owns EncodedCert[:Length]
+		if c, err := x509.ParseCertificate(bytes.Clone(raw)); err == nil {
+			out = append(out, c)
+		}
+		prev = ctx
+	}
 }
 
 // Remove deletes every copy of cert from the store; false if there was none.

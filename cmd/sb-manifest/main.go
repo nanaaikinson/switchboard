@@ -4,6 +4,12 @@
 //
 //	sb-manifest -version v0.2.0 -key RW... -base-url https://.../download/v0.2.0 dist/sb_*.tar.gz dist/sb_*.zip
 //	sb-manifest -tray -version v0.2.0 -key RW... -base-url ... Switchboard.app.tar.gz Switchboard_0.2.0_x64-setup.exe
+//
+// With -verify CHANNEL it instead checks a signed manifest, FILE and
+// FILE.minisig, exactly as sb self-update (or, with -tray, the tray app) will:
+//
+//	sb-manifest -verify stable -key RW... updates/stable.json
+//	sb-manifest -tray -verify stable -key RW... updates/tray/stable.json
 package main
 
 import (
@@ -24,7 +30,30 @@ func main() {
 	flag.StringVar(&o.PublicKey, "key", os.Getenv("SB_UPDATE_PUBLIC_KEY"), "release minisign public key (default $SB_UPDATE_PUBLIC_KEY)")
 	flag.StringVar(&o.BaseURL, "base-url", "", "URL the files are downloaded from")
 	flag.IntVar(&o.Rollout, "rollout", 100, "rollout_percent, 0-100")
+	verify := flag.String("verify", "", "check FILE and FILE.minisig as the signed manifest of this channel, instead of building one")
 	flag.Parse()
+	if *verify != "" {
+		if flag.NArg() != 1 {
+			fmt.Fprintln(os.Stderr, "usage: sb-manifest [-tray] -verify CHANNEL -key RW... FILE")
+			os.Exit(2)
+		}
+		var version string
+		if *tray {
+			m, err := update.CheckSignedTrayManifest(o.PublicKey, *verify, flag.Arg(0))
+			if err != nil {
+				fail(err)
+			}
+			version = m.Version
+		} else {
+			m, err := update.CheckSignedManifest(o.PublicKey, *verify, flag.Arg(0))
+			if err != nil {
+				fail(err)
+			}
+			version = m.Version
+		}
+		fmt.Fprintf(os.Stderr, "sb-manifest: %s: %s on %s, signed\n", flag.Arg(0), version, *verify)
+		return
+	}
 	if o.Version == "" || o.BaseURL == "" || flag.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "usage: sb-manifest [-tray] -version vX.Y.Z -key RW... -base-url URL FILE...")
 		os.Exit(2)

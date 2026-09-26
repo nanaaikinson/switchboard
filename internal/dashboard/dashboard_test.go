@@ -66,7 +66,9 @@ func (e *env) signIn(t *testing.T) string {
 		t.Fatalf("login: %d %s", rec.Code, rec.Header().Get("Location"))
 	}
 	c := rec.Result().Cookies()
-	if len(c) != 1 || c[0].Name != CookieName || !c[0].HttpOnly || !c[0].Secure || c[0].SameSite != http.SameSiteStrictMode || c[0].Path != "/" {
+	// __Host- cookies must be Secure, Path=/ and have no Domain, or browsers drop them.
+	if len(c) != 1 || c[0].Name != CookieName || !strings.HasPrefix(c[0].Name, "__Host-") || c[0].Domain != "" ||
+		!c[0].HttpOnly || !c[0].Secure || c[0].SameSite != http.SameSiteStrictMode || c[0].Path != "/" {
 		t.Fatalf("cookie %+v", c)
 	}
 	return c[0].Value
@@ -185,13 +187,24 @@ func TestStaticFiles(t *testing.T) {
 
 func TestWrap(t *testing.T) {
 	e := newEnv()
-	// Other hosts go to the proxy.
-	req := httptest.NewRequest("GET", "/", nil)
-	req.Host = "myapp.test"
-	rec := httptest.NewRecorder()
-	e.h.ServeHTTP(rec, req)
-	if body, _ := io.ReadAll(rec.Body); string(body) != "proxied" {
-		t.Errorf("other host got %q", body)
+	// Other hosts go to the proxy; names under the dashboard's never do.
+	for _, tc := range []struct {
+		host string
+		code int
+		body string
+	}{
+		{"myapp.test", 200, "proxied"},
+		{"myswitchboard.test", 200, "proxied"},
+		{"api.switchboard.test", 404, "reserved"},
+		{"A.B.Switchboard.Test.:443", 404, "reserved"},
+	} {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Host = tc.host
+		rec := httptest.NewRecorder()
+		e.h.ServeHTTP(rec, req)
+		if body, _ := io.ReadAll(rec.Body); rec.Code != tc.code || !strings.Contains(string(body), tc.body) {
+			t.Errorf("%s: %d %q", tc.host, rec.Code, body)
+		}
 	}
 	// Plain HTTP to the dashboard goes to HTTPS, never serving anything.
 	rec2 := e.do("GET", "/login?token="+e.s.NewLogin(), "", true)
@@ -199,9 +212,9 @@ func TestWrap(t *testing.T) {
 		t.Errorf("plain HTTP: %d %s", rec2.Code, rec2.Header().Get("Location"))
 	}
 	noTLS := New(&fakeAPI{}, assets).Wrap(http.NotFoundHandler(), []string{"switchboard.test"}, 0)
-	req = httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequest("GET", "/", nil)
 	req.Host = "Switchboard.Test."
-	rec = httptest.NewRecorder()
+	rec := httptest.NewRecorder()
 	noTLS.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "sb doctor") {
 		t.Errorf("without HTTPS: %d %s", rec.Code, rec.Body)

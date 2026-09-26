@@ -18,8 +18,13 @@ func (p *Platform) ServeHelper(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s := &posix.Server{Socket: p.o.HelperSocket, UID: p.o.UID, GID: gid, Addrs: p.o.HelperAddrs}
+	s := &posix.Server{Socket: p.o.HelperSocket, UID: p.o.UID, GID: gid, Addrs: p.o.HelperAddrs, DNSAddr: p.o.HelperDNSAddr, Build: p.o.Version}
 	return s.Serve(ctx)
+}
+
+// HelperDNS asks the helper for the DNS server's sockets.
+func (p *Platform) HelperDNS(ctx context.Context) (net.PacketConn, net.Listener, error) {
+	return posix.DNSSockets(ctx, p.o.HelperSocket)
 }
 
 // HelperListeners asks the helper for the HTTP and HTTPS listening sockets.
