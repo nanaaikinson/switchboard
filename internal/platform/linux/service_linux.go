@@ -85,11 +85,15 @@ func (p *Platform) InstallService() error {
 		}
 	}
 
-	unitDir := filepath.Dir(p.daemonUnit())
-	if err := p.files.MkdirChainOwned(p.o.Home, unitDir, gid); err != nil {
+	home, err := p.files.OpenHome(p.o.Home)
+	if err != nil {
 		return err
 	}
-	if err := p.files.WriteFile(p.daemonUnit(), daemonUnit(p.o.SbPath), 0o644, p.o.UID, gid); err != nil {
+	defer home.Close()
+	if err := home.MkdirAll(filepath.Dir(p.daemonUnit()), gid); err != nil {
+		return err
+	}
+	if err := home.WriteFile(p.daemonUnit(), daemonUnit(p.o.SbPath), 0o644, gid); err != nil {
 		return err
 	}
 	for _, args := range [][]string{{"daemon-reload"}, {"enable", daemonUnitName}, {"restart", daemonUnitName}} {
@@ -121,7 +125,7 @@ func (p *Platform) RemoveService() error {
 		} else {
 			errs = append(errs, err)
 		}
-		errs = append(errs, p.files.RemoveUserFile(p.daemonUnit()))
+		errs = append(errs, p.files.RemoveUserFile(p.o.Home, p.daemonUnit()))
 		if err == nil {
 			_ = p.userSystemctl(user, "daemon-reload") // best effort; the unit is gone either way
 		}

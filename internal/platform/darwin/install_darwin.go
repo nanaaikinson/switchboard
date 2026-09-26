@@ -201,17 +201,18 @@ func (p *Platform) InstallService() error {
 		return err
 	}
 
-	if err := p.files.CheckUserDir(filepath.Join(p.o.Home, "Library")); err != nil {
+	home, err := p.files.OpenHome(p.o.Home)
+	if err != nil {
 		return err
 	}
-	agentDir := filepath.Dir(p.agentPlist())
-	if err := p.files.MkdirOwned(agentDir, gid); err != nil {
+	defer home.Close()
+	if err := home.CheckDir(filepath.Join(p.o.Home, "Library")); err != nil {
 		return err
 	}
-	if err := p.files.CheckUserDir(agentDir); err != nil {
+	if err := home.MkdirAll(filepath.Dir(p.agentPlist()), gid); err != nil {
 		return err
 	}
-	if err := p.files.WriteFile(p.agentPlist(), agentPlist(p.o.SbPath, p.agentLog()), 0o644, p.o.UID, gid); err != nil {
+	if err := home.WriteFile(p.agentPlist(), agentPlist(p.o.SbPath, p.agentLog()), 0o644, gid); err != nil {
 		return err
 	}
 	return p.reload(p.guiDomain(), DaemonLabel, p.agentPlist())
@@ -223,7 +224,7 @@ func (p *Platform) RemoveService() error {
 	var errs []error
 	errs = append(errs, p.unload(p.guiDomain(), DaemonLabel))
 	for _, f := range []string{p.agentPlist(), p.agentLog()} {
-		errs = append(errs, p.files.RemoveUserFile(f))
+		errs = append(errs, p.files.RemoveUserFile(p.o.Home, f))
 	}
 	errs = append(errs, p.unload("system", HelperLabel))
 	for _, f := range []string{helperPlistPath, helperBinPath, helperLogPath} {

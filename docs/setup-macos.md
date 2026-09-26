@@ -81,7 +81,9 @@ tools also write `nameserver 127.0.0.1` files, and those are never removed. If
   upgrading `sb` to refresh that copy.
 - **Writing into your home as root is guarded.**
   - `~`, `~/Library` and `~/Library/LaunchAgents` must be real directories owned by
-    you, not symlinks.
+    you, not symlinks, checked through the open directory handle.
+  - Every change in your home goes through an `os.Root` opened on it, so no path can
+    lead out of it, even if a directory is swapped for a symlink after it was checked.
   - Files are written to an `O_EXCL` temp file, chowned and chmodded through the open
     handle, then renamed into place, so a symlink at the destination is replaced rather
     than followed.
