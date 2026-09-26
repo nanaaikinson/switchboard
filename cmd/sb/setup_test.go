@@ -56,11 +56,12 @@ type nssSpy struct {
 	platform.Platform
 	trusted, untrusted []string
 	restarts           int
+	restartErr         error
 }
 
 func (s *nssSpy) TrustNSS(path string) error   { s.trusted = append(s.trusted, path); return nil }
 func (s *nssSpy) UntrustNSS(path string) error { s.untrusted = append(s.untrusted, path); return nil }
-func (s *nssSpy) RestartDaemon() (bool, error) { s.restarts++; return true, nil }
+func (s *nssSpy) RestartDaemon() (bool, error) { s.restarts++; return true, s.restartErr }
 
 // setupEnv isolates tests of setup, uninstall, trust and untrust: macOS as a
 // normal user, a temp config dir (so the CA is created there), and no NSS
@@ -309,6 +310,19 @@ func TestTrustReplacesLegacyCA(t *testing.T) {
 	}
 	if strings.Join(spy.untrusted, ",") != caCert || strings.Join(spy.trusted, ",") != caCert || spy.restarts != 1 {
 		t.Errorf("NSS untrust %v, trust %v, restarts %d", spy.untrusted, spy.trusted, spy.restarts)
+	}
+}
+
+// After the swap the daemon must restart to sign with the new CA; if it
+// can't, sb trust fails and says how to fix it.
+func TestTrustReplacingLegacyCAReportsRestartFailure(t *testing.T) {
+	spy, caCert := setupEnv(t)
+	spy.restartErr = errors.New("launchctl: no such service")
+	writeLegacyCA(t, filepath.Dir(filepath.Dir(caCert)))
+	fakeSudo(t, nil)
+	_, err := runWithInput(t, "", "trust", "--yes")
+	if err == nil || !strings.Contains(err.Error(), "restarting the daemon failed") || !strings.Contains(err.Error(), "sb setup") {
+		t.Errorf("err = %v", err)
 	}
 }
 

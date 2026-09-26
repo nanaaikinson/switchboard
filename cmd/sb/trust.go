@@ -88,9 +88,17 @@ func (t trustTarget) finish(cmd *cobra.Command, p platform.Platform) error {
 		if err := pki.Promote(t.dir); err != nil {
 			return fmt.Errorf("%w; run 'sb trust' again", err)
 		}
-		if _, err := p.RestartDaemon(); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: restart the daemon so it uses the new CA: %v\n", err)
+		trustNSS(cmd, p, pki.CertPath(t.dir))
+		// Until it restarts, the daemon signs with the old CA, which is no
+		// longer trusted.
+		restarted, err := p.RestartDaemon()
+		switch {
+		case err != nil:
+			return fmt.Errorf("the new CA is trusted, but restarting the daemon failed: %w; run 'sb setup' to restart it, so HTTPS uses the new CA", err)
+		case !restarted:
+			fmt.Fprintln(cmd.OutOrStdout(), "Restart 'sb daemon' so HTTPS uses the new CA.")
 		}
+		return nil
 	}
 	trustNSS(cmd, p, pki.CertPath(t.dir))
 	return nil

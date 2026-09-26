@@ -570,6 +570,32 @@ func TestStageAndPromote(t *testing.T) {
 	}
 }
 
+// If the staged CA can't be moved into place, the current one stays.
+func TestPromoteFailureKeepsCA(t *testing.T) {
+	dir := t.TempDir()
+	old, err := LoadOrCreate(dir, []string{"test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Stage(dir, []string{"test"}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	rename = func(from, to string) error {
+		if calls++; calls == 2 {
+			return errors.New("disk full")
+		}
+		return os.Rename(from, to)
+	}
+	t.Cleanup(func() { rename = os.Rename })
+	if err := Promote(dir); err == nil {
+		t.Fatal("promote succeeded")
+	}
+	if cur, err := Load(dir); err != nil || cur.Fingerprint() != old.Fingerprint() {
+		t.Errorf("after a failed promote: %v", err)
+	}
+}
+
 func TestOwnedBy(t *testing.T) {
 	mine := selfSigned(t, func(*x509.Certificate) {})
 	for name, tc := range map[string]struct {

@@ -37,13 +37,14 @@ func (p *Platform) TrustCA(certPath, fingerprint string) error {
 	if p.o.Anchors == "" || len(p.o.TrustCommand) == 0 {
 		return fmt.Errorf("trust CA: no supported system CA bundle found; add %s to your distro's trust store by hand", certPath)
 	}
-	if _, err := p.removeCAs(func(c *x509.Certificate) bool { return !c.Equal(cert) && p.owns(c) }); err != nil {
-		return fmt.Errorf("trust CA: remove older Switchboard CAs: %w", err)
-	}
 	anchor := fmt.Sprintf(p.o.Anchors, anchorPrefix+cert.SerialNumber.Text(16))
 	data := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
 	if err := p.files.WriteFile(anchor, data, 0o644, 0, 0); err != nil {
 		return fmt.Errorf("trust CA in the system bundle: %w", err)
+	}
+	// The user's older CAs go once this one is in, in the same regeneration.
+	if _, err := p.removeCAs(func(c *x509.Certificate) bool { return !c.Equal(cert) && p.owns(c) }); err != nil {
+		return fmt.Errorf("trust CA: remove older Switchboard CAs: %w", err)
 	}
 	return p.run("regenerate the system CA bundle", p.o.TrustCommand[0], p.o.TrustCommand[1:]...)
 }

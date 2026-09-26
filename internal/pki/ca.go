@@ -155,6 +155,9 @@ func Stage(dir string, tlds []string) (*CA, error) {
 	return LoadOrCreate(next, tlds)
 }
 
+// rename is os.Rename; swapped in tests.
+var rename = os.Rename
+
 // Promote replaces the CA in dir with the staged one. Leaves the old CA
 // signed are reissued on first use.
 func Promote(dir string) error {
@@ -167,10 +170,12 @@ func Promote(dir string) error {
 		return fmt.Errorf("replace CA: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(old) }()
-	if err := os.Rename(filepath.Join(dir, caDirName), filepath.Join(old, caDirName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := rename(filepath.Join(dir, caDirName), filepath.Join(old, caDirName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("replace CA: %w", err)
 	}
-	if err := os.Rename(filepath.Join(next, caDirName), filepath.Join(dir, caDirName)); err != nil {
+	if err := rename(filepath.Join(next, caDirName), filepath.Join(dir, caDirName)); err != nil {
+		// Put the old CA back rather than leave none.
+		_ = rename(filepath.Join(old, caDirName), filepath.Join(dir, caDirName))
 		return fmt.Errorf("replace CA: %w", err)
 	}
 	return os.RemoveAll(next)

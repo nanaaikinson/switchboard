@@ -129,9 +129,15 @@ func TestTrustCA(t *testing.T) {
 		t.Errorf("trust store called for rejected files: %d calls", len(trusted))
 	}
 
-	p = New(Options{UID: uid, Run: (&keychain{t: t}).run, Trust: func(*x509.Certificate) error { return errors.New("denied") }})
+	// If macOS refuses, the CA being replaced must still be trusted, or
+	// HTTPS breaks until the next try.
+	k = &keychain{t: t, certs: []*x509.Certificate{legacy}}
+	p = New(Options{UID: uid, User: "me", Run: k.run, Trust: func(*x509.Certificate) error { return errors.New("denied") }})
 	if err := p.TrustCA(ca.CertPath(), ca.Fingerprint()); err == nil || !strings.Contains(err.Error(), "denied") || !strings.Contains(err.Error(), "logged-in Terminal") {
 		t.Errorf("err = %v", err)
+	}
+	if !k.has(legacy) {
+		t.Error("removed the old CA although the new one wasn't trusted")
 	}
 }
 

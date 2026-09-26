@@ -228,11 +228,12 @@ func (p *Platform) TrustCA(certPath, fingerprint string) error {
 	if err := pki.CheckTrust(cert, fingerprint, sid); err != nil {
 		return fmt.Errorf("trust CA: %w", err)
 	}
-	if err := p.removeCAs(func(c *x509.Certificate) bool { return !c.Equal(cert) && p.owns(c, sid) }); err != nil {
-		return fmt.Errorf("trust CA: remove older Switchboard CAs: %w", err)
-	}
 	if err := p.o.Store.Add(cert); err != nil {
 		return fmt.Errorf("trust CA in LocalMachine\\Root: %w", err)
+	}
+	// The user's older CAs stay trusted until this one is.
+	if err := p.removeCAs(func(c *x509.Certificate) bool { return !c.Equal(cert) && p.owns(c, sid) }); err != nil {
+		return fmt.Errorf("trusted the CA, but could not remove older Switchboard CAs: %w; run 'sb trust' again", err)
 	}
 	return nil
 }

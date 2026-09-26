@@ -1,6 +1,7 @@
 package darwin
 
 import (
+	"bytes"
 	"crypto/sha1" //nolint:gosec // G505: SHA-1 is how the security tool names keychain items, not a security check
 	"crypto/x509"
 	"encoding/hex"
@@ -56,13 +57,19 @@ func (p *Platform) TrustCA(certPath, fingerprint string) error {
 	if err := pki.CheckTrust(cert, fingerprint, strconv.Itoa(p.o.UID)); err != nil {
 		return fmt.Errorf("trust CA: %w", err)
 	}
-	// The user's older CAs go first: they may not be limited to TLS, and
-	// truststore finds trust settings by subject, which they share.
-	if err := p.removeCAs(func(c *x509.Certificate) bool { return !c.Equal(cert) && p.owns(c) }); err != nil {
+	// truststore finds trust settings by subject, so older CAs with the same
+	// subject go first. The user's other CAs, such as ones from earlier
+	// versions, stay trusted until this one is, so HTTPS keeps working if
+	// macOS refuses.
+	older := func(c *x509.Certificate) bool { return !c.Equal(cert) && p.owns(c) }
+	if err := p.removeCAs(func(c *x509.Certificate) bool { return older(c) && bytes.Equal(c.RawSubject, cert.RawSubject) }); err != nil {
 		return fmt.Errorf("trust CA: remove older Switchboard CAs: %w", err)
 	}
 	if err := p.o.Trust(cert); err != nil {
 		return fmt.Errorf("trust CA in %s: %w; run 'sb trust' from a logged-in Terminal session so macOS can ask for approval", systemKeychain, err)
+	}
+	if err := p.removeCAs(older); err != nil {
+		return fmt.Errorf("trusted the CA, but could not remove older Switchboard CAs: %w; run 'sb trust' again", err)
 	}
 	return nil
 }
