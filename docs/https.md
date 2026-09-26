@@ -60,7 +60,10 @@ Leaves are issued on demand during the TLS handshake (`tls.Config.GetCertificate
 from the SNI server name:
 
 - A name routed exactly (`myapp.test`), or not routed at all, gets a certificate for
-  exactly that name. Unrouted names still get one, so the 404 page loads over HTTPS.
+  exactly that name. Unrouted names still get one, so the 404 page loads over HTTPS,
+  but only 16 at once and then one every 2 seconds, kept in memory only: any web page
+  can make the browser ask for `random123.test`, and each new name costs a key and a
+  signature. Past the limit the handshake fails until a route exists.
 - A name matched only through a wildcard route gets a wildcard certificate for its
   parent: `a.tenants.myapp.test` and `b.tenants.myapp.test` share
   `*.tenants.myapp.test`. Wildcards cover one label, so `x.a.tenants.myapp.test` gets
@@ -69,8 +72,11 @@ from the SNI server name:
   TLD (`*.test`), and handshakes without SNI are refused.
 
 Each leaf is ECDSA P-256 and valid for 90 days, with the server-auth extended key
-usage. Leaves are cached in memory and on disk, and reissued when less than 30 days are
-left, or if they weren't signed by the current CA.
+usage. Leaves are cached in memory (the 512 most recently used) and, for routed names,
+on disk, and reissued when less than 30 days are left, or if they weren't signed by the
+current CA. Concurrent handshakes for one name share one issue, and keys are made
+outside the issuer's lock. At startup the daemon deletes leaf files that would be
+reissued anyway.
 
 ## Trust
 

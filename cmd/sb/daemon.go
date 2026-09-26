@@ -117,7 +117,7 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 		dashHosts[i] = dashboard.Host(t)
 	}
 	// The CA comes first: the API reports on it. Without one, HTTPS stays off.
-	issuer, ca, caErr := newIssuer(caTLDs, px)
+	issuer, ca, caErr := newIssuer(caTLDs, px, dashHosts)
 	hosts := &hostsSyncer{Proxy: px, next: make(chan []config.Route, 1), extra: dashHosts}
 	backends := opts.mdnsBackends
 	if backends == nil {
@@ -278,8 +278,9 @@ func proxyListeners(ctx context.Context, opts daemonOptions) (plain, secure list
 
 // newIssuer loads or creates the local CA and serves names that only match
 // through a wildcard route with a wildcard certificate for their parent, so
-// one certificate covers all siblings.
-func newIssuer(tlds []string, px proxy.Proxy) (*pki.Issuer, *pki.CA, error) {
+// one certificate covers all siblings. Names that no route (or reserved
+// host) serves get certificates at a limited rate, kept only in memory.
+func newIssuer(tlds []string, px proxy.Proxy, reserved []string) (*pki.Issuer, *pki.CA, error) {
 	dir, err := pki.DefaultDir()
 	if err != nil {
 		return nil, nil, err
@@ -296,14 +297,22 @@ func newIssuer(tlds []string, px proxy.Proxy) (*pki.Issuer, *pki.CA, error) {
 	if ca.Legacy {
 		slog.Warn("local CA is from an earlier version and not limited to TLS server certificates; run 'sb trust' to replace it")
 	}
-	return pki.NewIssuer(ca, pki.IssuerOptions{NameFor: func(host string) string {
-		if _, wildcard, ok := px.Lookup(host); ok && wildcard {
-			if _, parent, _ := strings.Cut(host, "."); strings.Contains(parent, ".") {
-				return "*." + parent
+	issuer := pki.NewIssuer(ca, pki.IssuerOptions{
+		NameFor: func(host string) string {
+			if _, wildcard, ok := px.Lookup(host); ok && wildcard {
+				if _, parent, _ := strings.Cut(host, "."); strings.Contains(parent, ".") {
+					return "*." + parent
+				}
 			}
-		}
-		return host
-	}}), ca, nil
+			return host
+		},
+		Routed: func(host string) bool {
+			_, _, ok := px.Lookup(host)
+			return ok || slices.Contains(reserved, host)
+		},
+	})
+	go issuer.PruneLeaves()
+	return issuer, ca, nil
 }
 
 // caInfo reports the CA for GET /v1/ca. Trust is checked by verifying a

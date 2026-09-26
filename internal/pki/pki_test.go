@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -237,6 +238,102 @@ func TestIssueWildcard(t *testing.T) {
 	}
 	if err := verify(ca, a.Leaf, "x.deep.myapp.test"); err == nil {
 		t.Error("*.myapp.test verified for a second-level subdomain")
+	}
+}
+
+// Names without a route (any web page can make a browser ask for
+// random.test) get a certificate, but only in memory and at a limited rate.
+func TestUnroutedNamesAreRateLimited(t *testing.T) {
+	ca := newCA(t)
+	now := time.Now()
+	iss := NewIssuer(ca, IssuerOptions{
+		Routed: func(host string) bool { return host == "myapp.test" },
+		Now:    func() time.Time { return now },
+	})
+	hello := func(host string) (*tls.Certificate, error) {
+		return iss.GetCertificate(&tls.ClientHelloInfo{ServerName: host})
+	}
+	for n := range unroutedBurst {
+		if _, err := hello(fmt.Sprintf("r%d.test", n)); err != nil {
+			t.Fatalf("unrouted name %d within the burst: %v", n, err)
+		}
+	}
+	if _, err := hello("one-too-many.test"); err == nil || !strings.Contains(err.Error(), "add a route") {
+		t.Errorf("past the burst: %v", err)
+	}
+	if _, err := hello("r0.test"); err != nil {
+		t.Errorf("cached unrouted name: %v", err)
+	}
+	if _, err := hello("myapp.test"); err != nil {
+		t.Errorf("routed name while limited: %v", err)
+	}
+	now = now.Add(unroutedEvery)
+	if _, err := hello("later.test"); err != nil {
+		t.Errorf("after the refill: %v", err)
+	}
+	files, _ := filepath.Glob(filepath.Join(ca.dir, leafDirName, "*.pem"))
+	if len(files) != 1 || filepath.Base(files[0]) != "myapp.test.pem" {
+		t.Errorf("leaf files %v, want only the routed name's", files)
+	}
+}
+
+func TestCacheIsBounded(t *testing.T) {
+	iss := NewIssuer(newCA(t), IssuerOptions{})
+	iss.max = 3
+	first, err := iss.Certificate("a.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"b.test", "c.test", "d.test"} {
+		if _, err := iss.Certificate(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(iss.cache) != 3 || iss.lru.Len() != 3 || iss.cache["a.test"] != nil {
+		t.Errorf("cache holds %d (list %d); a.test evicted: %v", len(iss.cache), iss.lru.Len(), iss.cache["a.test"] == nil)
+	}
+	again, err := iss.Certificate("a.test") // read back from disk
+	if err != nil || !again.Leaf.Equal(first.Leaf) {
+		t.Errorf("evicted leaf not reloaded from disk: %v", err)
+	}
+}
+
+func TestConcurrentRequestsShareOneIssue(t *testing.T) {
+	iss := NewIssuer(newCA(t), IssuerOptions{})
+	certs := make([]*tls.Certificate, 16)
+	var wg sync.WaitGroup
+	for n := range certs {
+		wg.Go(func() {
+			c, err := iss.Certificate("same.test")
+			if err != nil {
+				t.Error(err)
+			}
+			certs[n] = c
+		})
+	}
+	wg.Wait()
+	for _, c := range certs {
+		if c != certs[0] {
+			t.Fatal("concurrent requests for one name issued different leaves")
+		}
+	}
+}
+
+func TestPruneLeaves(t *testing.T) {
+	ca := newCA(t)
+	now := time.Now()
+	old := NewIssuer(ca, IssuerOptions{Now: func() time.Time { return now.Add(-LeafValidity) }})
+	if _, err := old.Certificate("stale.test"); err != nil {
+		t.Fatal(err)
+	}
+	iss := NewIssuer(ca, IssuerOptions{})
+	if _, err := iss.Certificate("*.fresh.test"); err != nil {
+		t.Fatal(err)
+	}
+	iss.PruneLeaves()
+	files, _ := filepath.Glob(filepath.Join(ca.dir, leafDirName, "*.pem"))
+	if len(files) != 1 || filepath.Base(files[0]) != "_wildcard.fresh.test.pem" {
+		t.Errorf("after prune: %v", files)
 	}
 }
 
