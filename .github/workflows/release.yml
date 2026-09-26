@@ -444,11 +444,16 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # The archives are re-downloaded from the release, whose assets anyone
+      # with write access could have replaced since the release job. Sign
+      # them only if they match that job's SHA256SUMS, and SHA256SUMS carries
+      # its signature for this tag.
       - name: Sign the sb archives
         if: steps.cfg.outputs.enabled == 'true'
         run: |
           sudo apt-get install -y -qq minisign
-          gh release download "$TAG" -p 'sb_*.tar.gz' -p 'sb_*.zip' -D dist
+          gh release download "$TAG" -p 'sb_*.tar.gz' -p 'sb_*.zip' -p SHA256SUMS -p SHA256SUMS.minisig -D dist
+          sh .github/scripts/verify-release-sums.sh "$TAG" "$SB_UPDATE_PUBLIC_KEY" dist/SHA256SUMS dist/sb_*
           key=$(mktemp) && trap 'rm -f "$key"' EXIT
           printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
           for f in dist/sb_*; do

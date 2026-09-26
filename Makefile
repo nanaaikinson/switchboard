@@ -41,6 +41,7 @@ lint-sh:
 	sh test/install/install-test.sh >/dev/null
 	sh test/release/next-version-test.sh >/dev/null
 	sh test/release/winget-manifests-test.sh >/dev/null
+	sh test/release/verify-release-sums-test.sh >/dev/null
 
 vuln:
 	govulncheck ./...

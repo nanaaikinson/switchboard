@@ -146,6 +146,11 @@ percentage comes from the verified manifest too.
    enable GitHub Pages from its default branch root.
 
 After that, every release's `publish-updates` job does the following:
+- downloads the `sb` archives, `SHA256SUMS` and `SHA256SUMS.minisig` from the release,
+  and fails unless `SHA256SUMS` verifies with `SB_UPDATE_PUBLIC_KEY` and the trusted
+  comment `switchboard <tag> SHA256SUMS`, and every archive is listed in it with a
+  matching SHA-256 (`.github/scripts/verify-release-sums.sh`). So it signs only what
+  the release job built, even if someone replaced a release asset in between;
 - signs each `sb` archive with the trusted comment above, and uploads the `.minisig`
   files to the release;
 - builds `sb.json` and `tray.json` with `go run ./cmd/sb-manifest`, which verifies every

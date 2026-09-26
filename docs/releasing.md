@@ -64,8 +64,11 @@ The release workflow:
    installers' signatures with `signtool` before uploading them (when signed), then
    opens a winget PR for `sb` (see [below](#scoop-and-winget)).
 7. Signs each `sb` archive with the release key, and publishes the update manifests
-   that `sb self-update` and the tray app read (see [updates.md](updates.md)). This is
-   skipped until the key and deploy token are configured.
+   that `sb self-update` and the tray app read (see [updates.md](updates.md)). The
+   archives are downloaded from the release again for this, so they're signed only if
+   they match step 4's `SHA256SUMS` and its signature (`verify-release-sums.sh`);
+   otherwise the job fails. This is skipped until the key and deploy token are
+   configured.
 
 Releases cut by auto-tag get the same secrets as tag pushes: autotag.yml passes them on
 to the release workflow (`secrets: inherit`).
