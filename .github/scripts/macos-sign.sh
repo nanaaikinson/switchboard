@@ -49,8 +49,9 @@ setup() {
 	# The Developer ID intermediates, in case the runner image lacks them;
 	# codesign needs the full chain.
 	for ca in DeveloperIDG2CA DeveloperIDCA; do
-		curl -fsSL -o "$tmp/$ca.cer" "https://www.apple.com/certificateauthority/$ca.cer" &&
-			security import "$tmp/$ca.cer" -k "$keychain" >/dev/null 2>&1 || true
+		if curl -fsSL -o "$tmp/$ca.cer" "https://www.apple.com/certificateauthority/$ca.cer"; then
+			security import "$tmp/$ca.cer" -k "$keychain" >/dev/null 2>&1 || true # already there
+		fi
 		rm -f "$tmp/$ca.cer"
 	done
 

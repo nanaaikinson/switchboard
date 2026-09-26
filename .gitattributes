@@ -1,0 +1,3 @@
+# Signed test fixtures: their bytes must not change, so no CRLF conversion
+# on Windows checkouts (the signatures would stop verifying).
+internal/update/testdata/** -text
