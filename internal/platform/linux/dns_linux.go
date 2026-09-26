@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -107,7 +108,11 @@ func (p *Platform) removeDropin(path string) (bool, error) {
 	case !bytes.HasPrefix(got, []byte(marker)):
 		return false, fmt.Errorf("left %s in place: %w", path, ErrForeignFile)
 	}
-	return true, p.files.Remove(path)
+	if err := p.files.Remove(path); err != nil {
+		return true, err
+	}
+	_ = os.Remove(p.fs(filepath.Dir(path))) // setup may have made it; fails harmlessly unless empty
+	return true, nil
 }
 
 func (p *Platform) run(what, name string, args ...string) error {

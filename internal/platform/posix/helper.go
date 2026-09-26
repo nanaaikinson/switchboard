@@ -112,6 +112,12 @@ func (s *Server) Serve(ctx context.Context) error {
 func (s *Server) handle(c *net.UnixConn, ports, dns *socketSet) {
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(helperIOTimeout))
+	// The socket's mode and owner already keep others out; checking the
+	// peer's uid as well means a mistake there can't hand them the ports.
+	if uid, err := peerUID(c); err != nil || uid != s.UID && uid != 0 {
+		slog.Warn("helper: refused a connection from another user", "uid", uid, "err", err)
+		return
+	}
 	var req Request
 	line, err := bufio.NewReader(io.LimitReader(c, maxRequest)).ReadBytes('\n')
 	if err == nil {
@@ -161,7 +167,11 @@ func (s *Server) handle(c *net.UnixConn, ports, dns *socketSet) {
 		slog.Warn("helper: send listeners", "err", err)
 		return
 	}
-	slog.Info("helper answered", "op", req.Op, "sockets", len(fds), "error", resp.Error)
+	// Errors can name hostnames (from the hosts op), so only at debug level.
+	slog.Info("helper answered", "op", req.Op, "sockets", len(fds), "failed", resp.Error != "")
+	if resp.Error != "" {
+		slog.Debug("helper error", "op", req.Op, "error", resp.Error)
+	}
 }
 
 // boundSocket is a listening TCP or UDP socket the helper hands out.

@@ -75,7 +75,8 @@ tools also write `nameserver 127.0.0.1` files, and those are never removed. If
   socket. NSS databases are changed as you, so root never writes into your Firefox
   profile.
 - **Only you can talk to the helper.** Its socket is created root-owned, then chowned
-  to your uid with mode 0600, inside a root-owned 0755 directory. It accepts exactly
+  to your uid with mode 0600, inside a root-owned 0755 directory, and the helper also
+  checks each caller's uid (`LOCAL_PEERCRED`, `SO_PEERCRED` on Linux). It accepts exactly
   one request, `{"version":1,"op":"listeners"}`. The socket descriptors are sent with
   `SCM_RIGHTS`.
 - **The root job never runs a binary you can modify.** The LaunchDaemon runs a

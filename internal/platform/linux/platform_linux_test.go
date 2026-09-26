@@ -161,6 +161,9 @@ func TestResolvedMode(t *testing.T) {
 	if e.exists(path) || strings.Join(e.sys.mutating(), "; ") != "systemctl restart systemd-resolved" {
 		t.Errorf("after remove: exists=%v calls=%v", e.exists(path), e.sys.mutating())
 	}
+	if e.exists("etc/systemd/resolved.conf.d") {
+		t.Error("left the drop-in dir setup made")
+	}
 	e.sys.calls = nil
 	if err := e.p.RemoveResolver("test"); err != nil || len(e.sys.mutating()) != 0 {
 		t.Errorf("second remove: %v, calls %v", err, e.sys.mutating())
