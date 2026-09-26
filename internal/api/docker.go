@@ -42,9 +42,12 @@ func (s *Service) SetDocker(st DockerStatus, routes []DockerRoute) {
 
 // merge returns the config routes plus the Docker routes that don't claim a
 // reserved name, or a name or wildcard a config route (or an earlier Docker
-// route) already has. Config routes with reserved names are left out.
+// route) already has. Nor may a Docker route fall under a config route's
+// wildcard: the proxy prefers exact names, so it would take those names
+// from the config route. Config routes with reserved names are left out.
 func (s *Service) merge(cfg []config.Route, docker []DockerRoute) (all []config.Route, active []DockerRoute, conflicts []DockerSkip) {
 	used := map[string]string{}
+	var wildcards []string // bases of the config routes' wildcards
 	for _, r := range cfg {
 		if s.reservedBy(r.Name) != "" {
 			continue // kept in routes.toml from an older version, never served
@@ -52,20 +55,28 @@ func (s *Service) merge(cfg []config.Route, docker []DockerRoute) (all []config.
 		all = append(all, r)
 		for _, c := range claims(r) {
 			used[c] = "a route in routes.toml"
+			if base, ok := strings.CutPrefix(c, "*."); ok {
+				wildcards = append(wildcards, base)
+			}
 		}
 	}
 	for _, d := range docker {
-		var owner string
+		var reason string
 		for _, c := range claims(d.Route) {
 			if used[c] != "" {
-				owner = used[c]
+				reason = fmt.Sprintf("%s is taken by %s; change the container's dev.switchboard.hosts label", d.Name, used[c])
 			}
 		}
-		if s.reservedBy(d.Name) != "" {
-			owner = "the Switchboard dashboard"
+		base := strings.TrimPrefix(strings.ToLower(d.Name), "*.")
+		if i := slices.IndexFunc(wildcards, func(w string) bool { return base == w || under(base, w) }); i >= 0 && reason == "" {
+			reason = fmt.Sprintf("%s is under *.%s, a wildcard route in routes.toml, which containers can't override; change the container's dev.switchboard.hosts label",
+				d.Name, wildcards[i])
 		}
-		if owner != "" {
-			conflicts = append(conflicts, DockerSkip{Container: d.Container, Reason: fmt.Sprintf("%s is taken by %s", d.Name, owner)})
+		if s.reservedBy(d.Name) != "" {
+			reason = fmt.Sprintf("%s is taken by the Switchboard dashboard; change the container's dev.switchboard.hosts label", d.Name)
+		}
+		if reason != "" {
+			conflicts = append(conflicts, DockerSkip{Container: d.Container, Reason: reason})
 			continue
 		}
 		for _, c := range claims(d.Route) {

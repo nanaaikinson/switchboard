@@ -62,6 +62,9 @@ func TestRoutes(t *testing.T) {
 			"shop.test->8080(shop-web-1) *.shop.test->8080(shop-web-1) admin.shop.test->8080(shop-web-1)"},
 		{"bad name in hosts label", []Container{ctr("web", map[string]string{LabelHosts: "ok,not valid!"}, pub(8080, 80))},
 			`ok.test->8080(web) skip web: "not valid!" is not a valid hostname; fix dev.switchboard.hosts`},
+		{"TLD-wide wildcard in hosts label", []Container{ctr("web", map[string]string{LabelHosts: "web,*,*.test"}, pub(8080, 80))},
+			"web.test->8080(web) skip web: *.test covers the whole .test TLD, which a container can't take; use a name of its own in dev.switchboard.hosts, like *.myapp" +
+				" skip web: *.test covers the whole .test TLD, which a container can't take; use a name of its own in dev.switchboard.hosts, like *.myapp"},
 		{"scaled compose service: first replica wins", []Container{
 			ctr("shop-web-2", compose("shop", "web"), pub(2, 80)), ctr("shop-web-1", compose("shop", "web"), pub(1, 80)),
 		}, "web.shop.test->1(shop-web-1) skip shop-web-2: web.shop.test is already used by container shop-web-1; set dev.switchboard.hosts on one of them"},

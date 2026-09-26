@@ -31,8 +31,13 @@ Docker containers without a route:
 Names are lowercased, and characters other than letters, digits, dots and hyphens
 become hyphens (`My_App` → `my-app.test`). If two containers want the same name (for
 example a Compose service scaled to two replicas), the first by container name gets it
-and the other is listed as skipped. A route in `routes.toml` always wins over a
-container with the same name or wildcard. `sb rm` refuses to remove a Docker route.
+and the other is listed as skipped. A route in `routes.toml` (from `sb add` or a
+project file) always wins over a container with the same name or wildcard, and over a
+container name that falls under its wildcard: with `*.myapp.test` in `routes.toml`, a
+container can't take `admin.myapp.test` or `myapp.test`. Containers also can't take a
+whole TLD (`*` or `*.test` in `dev.switchboard.hosts`), or the dashboard's
+`switchboard.<tld>` or any name under it. Each refused name is listed as skipped, with
+what to change. `sb rm` refuses to remove a Docker route.
 
 ## Port choice
 

@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -121,6 +122,55 @@ func TestConfigRouteWinsOverDocker(t *testing.T) {
 		if r.Name == "web.test" && (r.Source != SourceDocker || r.Port != 8082) {
 			t.Errorf("web.test = %+v, want the Docker route back", r)
 		}
+	}
+}
+
+// The proxy prefers exact names over wildcards, so a container name under a
+// config or project-file wildcard would take those names from it.
+func TestDockerCantShadowConfigWildcard(t *testing.T) {
+	cfg := []config.Route{
+		{Name: "*.myapp.test", Port: 7000},
+		{Name: "shop.test", Port: 7001, Wildcard: true, File: "/p/switchboard.toml"},
+		{Name: "exact.test", Port: 7002},
+	}
+	tests := []struct {
+		docker string
+		served bool
+	}{
+		{"admin.myapp.test", false},
+		{"a.b.myapp.test", false},
+		{"*.api.myapp.test", false},
+		{"myapp.test", false},
+		{"admin.shop.test", false},
+		{"*.shop.test", false},
+		{"shop.test", false},
+		{"api.exact.test", true}, // exact.test has no wildcard
+		{"*.exact.test", true},
+		{"notmyapp.test", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.docker, func(t *testing.T) {
+			s, fp, _ := newTestService(t, cfg...)
+			s.SetDocker(DockerStatus{Enabled: true, Connected: true}, []DockerRoute{dr(tt.docker, 9000, "c")})
+			served := slices.ContainsFunc(fp.get(), func(r config.Route) bool { return r.Port == 9000 })
+			sk := s.Status().Docker.Skipped
+			if served != tt.served || (tt.served && len(sk) != 0) {
+				t.Fatalf("served %v, want %v; skipped %+v", served, tt.served, sk)
+			}
+			if !tt.served && (len(sk) != 1 || sk[0].Container != "c" || !strings.Contains(sk[0].Reason, "dev.switchboard.hosts")) {
+				t.Errorf("skipped = %+v, want a reason that says what to change", sk)
+			}
+		})
+	}
+
+	// A wildcard added later displaces a container already served under it.
+	s, fp, _ := newTestService(t)
+	s.SetDocker(DockerStatus{Enabled: true, Connected: true}, []DockerRoute{dr("admin.later.test", 9000, "c")})
+	if _, _, err := s.Put(config.Route{Name: "*.later", Port: 7003}); err != nil {
+		t.Fatal(err)
+	}
+	if got := routeNames(fp.get()); got != "*.later.test" {
+		t.Errorf("served = %s, want only the wildcard", got)
 	}
 }
 
