@@ -2,6 +2,7 @@
 name = "switchboard-tray"
 version = "0.1.0"
 description = "Switchboard menu-bar app"
+license = "MIT"
 edition = "2024"
 publish = false
 

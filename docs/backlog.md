@@ -6,14 +6,11 @@ below are in [releasing.md](releasing.md).
 
 ## Before going public
 
-- [ ] **Add a LICENSE.** Then replace `License: Proprietary` in
-  [winget-manifests.sh](../.github/scripts/winget-manifests.sh) and the Scoop entry in
-  [.goreleaser.yaml](../.goreleaser.yaml).
-- [ ] **Make the repository public.** Until then:
-  - GitHub build attestations are skipped;
-  - `brew install` and `scoop install` can't download the release assets;
-  - the winget step is skipped, because winget's validation downloads the zips;
-  - the project isn't eligible for free signing from SignPath Foundation.
+- [x] **Add a LICENSE:** MIT, in [LICENSE](../LICENSE) and the winget, Scoop and
+  `.deb`/`.rpm` metadata.
+- [x] **Make the repository public.** Attestations, Homebrew and Scoop downloads and the
+  winget step work from the next release; the project can also apply for free signing
+  from SignPath Foundation.
 - [ ] **Confirm the winget identity before the first PR.** The package identifier
   `Switchboard.Switchboard` (from the product spec) and the `Publisher` field are hard
   to change once published.

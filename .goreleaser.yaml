@@ -52,6 +52,7 @@ nfpms:
     bindir: /usr/bin
     homepage: https://github.com/nanaaikinson/switchboard
     maintainer: Nana Kwesi Ofosu-Aikins
+    license: MIT
     description: |-
       Map local ports to trusted HTTPS names.
       Switchboard routes names such as https://myapp.test to apps on local
@@ -114,7 +115,7 @@ scoops:
     ids: [sb]
     homepage: https://github.com/nanaaikinson/switchboard
     description: Map local ports to trusted HTTPS names
-    license: Proprietary # until the repository has a LICENSE
+    license: MIT
     directory: bucket
     repository:
       owner: nanaaikinson

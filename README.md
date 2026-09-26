@@ -124,3 +124,7 @@ sb uninstall
 
 That removes every system change. Then delete `sb` itself the way you installed it.
 [Uninstalling](docs/uninstall.md) has the details for each install method.
+
+## License
+
+[MIT](LICENSE).
