@@ -76,7 +76,7 @@ the proxy is rolled back and the request returns `500`.
 ### Types
 
 ```jsonc
-// Route
+// Route. In POST /v1/routes, a missing redirect_https means true, as for 'sb add'.
 {"name": "myapp.test", "port": 7000, "wildcard": false, "redirect_https": true}
 
 // RouteStatus = Route + health: "up" | "down" | "unknown", and source: "config" | "file" | "docker"
