@@ -204,6 +204,11 @@ func TestSelfUpdateRefuses(t *testing.T) {
 			selfPath = func() (string, error) { return "/opt/homebrew/Cellar/switchboard/1.0.0/bin/sb", nil }
 			return e
 		}, "installed by Homebrew, which keeps it up to date; instead run: brew upgrade sb", ""},
+		"SB_UPDATE_URL over plain http": {func(t *testing.T) *updateEnv {
+			e := newUpdateEnv(t, newSigner(t), "v1.1.0", script("v1.1.0"), nil)
+			t.Setenv("SB_UPDATE_URL", "http://updates.example.com")
+			return e
+		}, "SB_UPDATE_URL: http://updates.example.com is not https", ""},
 		"development build": {func(t *testing.T) *updateEnv {
 			e := newUpdateEnv(t, newSigner(t), "v1.1.0", script("v1.1.0"), nil)
 			version = "dev"

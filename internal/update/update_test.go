@@ -534,3 +534,55 @@ func TestUpdaterCheckErrors(t *testing.T) {
 		t.Errorf("http asset: %v", err)
 	}
 }
+
+func TestCheckURL(t *testing.T) {
+	for _, tc := range []struct {
+		url string
+		ok  bool
+	}{
+		{"https://nanaaikinson.github.io/switchboard-updates", true},
+		{"https://localhost:8443/updates", true},
+		{"http://localhost:8080/updates", true}, // a local test server
+		{"http://127.0.0.1:8080", true},
+		{"http://[::1]:8080", true},
+		{"http://nanaaikinson.github.io/switchboard-updates", false},
+		{"http://127.0.0.1.example.com", false},
+		{"http://localhost.example.com", false},
+		{"ftp://example.com/updates", false},
+		{"file:///tmp/updates", false},
+		{"nanaaikinson.github.io/switchboard-updates", false},
+		{"", false},
+	} {
+		if err := CheckURL(tc.url); (err == nil) != tc.ok {
+			t.Errorf("CheckURL(%q) = %v, want ok=%v", tc.url, err, tc.ok)
+		}
+	}
+}
+
+func TestUpdaterRedirects(t *testing.T) {
+	k := newKey(t)
+	r := newRelease(t, k, "v1.3.0", "darwin-arm64", "sb v1.3.0 darwin-arm64", nil)
+	plain := httptest.NewServer(http.NotFoundHandler()) // http, but on loopback
+	t.Cleanup(plain.Close)
+	for _, tc := range []struct {
+		to, why string
+	}{
+		{"http://example.invalid/stable.json", "is not https"},
+		{"https://example.invalid/stable.json", "example.invalid"}, // allowed, then fails to connect
+		{plain.URL + "/stable.json", "404"},                        // allowed: the loopback server answers
+	} {
+		redirect := httptest.NewTLSServer(http.RedirectHandler(tc.to, http.StatusFound))
+		u := r.updater(k, "v1.2.0")
+		u.BaseURL = redirect.URL
+		_, err := u.Check(context.Background(), "stable")
+		redirect.Close()
+		if err == nil || !strings.Contains(err.Error(), tc.why) {
+			t.Errorf("redirect to %s: err = %v, want %q", tc.to, err, tc.why)
+		}
+	}
+	u := r.updater(k, "v1.2.0")
+	u.BaseURL = "http://example.com"
+	if _, err := u.Check(context.Background(), "stable"); err == nil || !strings.Contains(err.Error(), "is not https") {
+		t.Errorf("http base URL: %v", err)
+	}
+}

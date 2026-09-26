@@ -35,11 +35,17 @@ var selfPath = func() (string, error) {
 // Swapped in tests.
 var updateHTTP *http.Client
 
-func updateBaseURL() string {
-	if u := os.Getenv("SB_UPDATE_URL"); u != "" {
-		return u
+// updateBaseURL is $SB_UPDATE_URL, or the default. It must be https, or http
+// to localhost for a local test server.
+func updateBaseURL() (string, error) {
+	u := os.Getenv("SB_UPDATE_URL")
+	if u == "" {
+		return update.DefaultBaseURL, nil
 	}
-	return update.DefaultBaseURL
+	if err := update.CheckURL(u); err != nil {
+		return "", fmt.Errorf("SB_UPDATE_URL: %w; fix it, or unset it to use %s", err, update.DefaultBaseURL)
+	}
+	return u, nil
 }
 
 // standalone returns the sb binary to update, or an error saying which
@@ -74,12 +80,19 @@ release may roll out gradually: each install has a random ID (in the config
 dir, never sent anywhere) that decides when it gets the update.
 
 sb installed with Homebrew, winget, Scoop, a .deb or .rpm, or inside the
-Switchboard app isn't updated this way; the error says what to run instead.`,
+Switchboard app isn't updated this way; the error says what to run instead.
+
+SB_UPDATE_URL replaces the update server, e.g. for testing. It must be an
+https URL (http only for localhost), and so must every redirect.`,
 		Example: "  sb self-update\n  sb self-update --check\n  sb self-update --channel beta",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !slices.Contains(update.Channels, channel) {
 				return fmt.Errorf("unknown channel %q; use %s", channel, strings.Join(update.Channels, " or "))
+			}
+			base, err := updateBaseURL()
+			if err != nil {
+				return err
 			}
 			exe, err := standalone()
 			if err != nil {
@@ -94,7 +107,7 @@ Switchboard app isn't updated this way; the error says what to run instead.`,
 				return err
 			}
 			u := update.Updater{
-				BaseURL: updateBaseURL(), PublicKey: update.ReleaseKey, Current: version,
+				BaseURL: base, PublicKey: update.ReleaseKey, Current: version,
 				Platform: runtime.GOOS + "-" + runtime.GOARCH, InstallID: id, HTTP: updateHTTP,
 			}
 			ctx := cmd.Context()

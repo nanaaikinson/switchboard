@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -48,11 +50,51 @@ type Check struct {
 	InRollout bool // Bucket < the release's rollout_percent
 }
 
+// client is u.HTTP, or a client with timeouts, made to follow only the
+// redirects CheckURL allows, so an https URL can't be redirected to http.
 func (u Updater) client() *http.Client {
+	c := http.Client{Timeout: 5 * time.Minute}
 	if u.HTTP != nil {
-		return u.HTTP
+		c = *u.HTTP
 	}
-	return &http.Client{Timeout: 5 * time.Minute}
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return checkURL(req.URL)
+	}
+	return &c
+}
+
+// CheckURL reports whether updates may be fetched from raw: it must be https,
+// or http to a loopback host (localhost, 127.0.0.1, ::1) for a local test
+// server. Every request and redirect is checked the same way.
+func CheckURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%q is not a URL", raw)
+	}
+	return checkURL(u)
+}
+
+func checkURL(u *url.URL) error {
+	switch {
+	case u.Host == "":
+		return fmt.Errorf("%q is not an absolute URL", u.Redacted())
+	case u.Scheme == "https":
+		return nil
+	case u.Scheme == "http" && isLoopback(u.Hostname()):
+		return nil
+	}
+	return fmt.Errorf("%s is not https; updates are only fetched over https (plain http only from localhost)", u.Redacted())
+}
+
+func isLoopback(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Check fetches the channel's manifest and compares it with this install.
@@ -116,6 +158,9 @@ func (u Updater) Download(ctx context.Context, c Check) ([]byte, error) {
 }
 
 func (u Updater) get(ctx context.Context, url string, limit int64) ([]byte, error) {
+	if err := CheckURL(url); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

@@ -19,6 +19,9 @@ The tray app updates itself from **Check for Updates…** in its menu.
    too.
 2. **Fetch the manifest** for the channel: `<base>/stable.json` or `<base>/beta.json`.
    The base is `https://nanaaikinson.github.io/switchboard-updates`, or `$SB_UPDATE_URL`.
+   Every request, and every redirect, must be `https`; plain `http` is allowed only to
+   a loopback host (`localhost`, `127.0.0.1`, `::1`) for a local test server. An
+   `SB_UPDATE_URL` that isn't is an error.
 3. **Rollout.** Each install has a random ID in `<config dir>/install-id`, made on
    first use and never sent anywhere. The bucket is
    `uint32(sha256(id + "\0" + version)[0:4]) % 100`. It's stable for a given install and
@@ -130,6 +133,8 @@ that already updated can run `sb rollback`.
 ```bash
 SB_UPDATE_URL=https://localhost:8443/updates sb self-update --check
 ```
+
+`http://localhost:8080/updates` works too; `http` to any other host is refused.
 
 The tests (`internal/update`, `cmd/sb/selfupdate_test.go`) cover:
 - the bucket math and rollout edges;
