@@ -92,7 +92,9 @@ winget install Switchboard.Switchboard
 ```
 
 Both install the portable `sb.exe` from the latest stable release, and update with
-`scoop update switchboard` or `winget upgrade Switchboard.Switchboard`.
+`scoop update switchboard` or `winget upgrade Switchboard.Switchboard`. Run
+`sb uninstall` before `scoop uninstall` or `winget uninstall` to undo setup's system
+changes; once `sb.exe` is gone, nothing can.
 
 Or with the install script, in PowerShell (Windows PowerShell 5.1 or pwsh 7), as your
 normal user:

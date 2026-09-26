@@ -77,7 +77,9 @@ homebrew_casks:
     binaries: [sb]
     homepage: https://github.com/nanaaikinson/switchboard
     description: Map local ports to trusted HTTPS names
-    caveats: "Run 'sb setup' once to set up .test names and trusted HTTPS."
+    caveats: |
+      Run 'sb setup' once to set up .test names and trusted HTTPS.
+      Run 'sb uninstall' before uninstalling to undo those system changes.
     repository:
       owner: nanaaikinson
       name: homebrew-tap
@@ -124,6 +126,7 @@ scoops:
     skip_upload: '{{ if index .Env "SCOOP_BUCKET_TOKEN" }}auto{{ else }}true{{ end }}'
     post_install:
       - Write-Host "Run 'sb setup' once to set up .test names and trusted HTTPS."
+      - Write-Host "Run 'sb uninstall' before 'scoop uninstall switchboard' to undo those system changes."
 
 # Release notes, grouped by conventional-commit type. autotag.yml picks the
 # version from the same commit types.

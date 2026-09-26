@@ -35,6 +35,7 @@ check "arm64 hash" grep -q "InstallerSha256: $(printf '%064d' 0 | tr 0 B)" "$ins
 check "x64 url" grep -q "InstallerUrl: https://github.com/owner/switchboard/releases/download/v0.3.0/sb_0.3.0_windows_amd64.zip" "$inst"
 check "path inside the zip has this version" grep -qF 'RelativeFilePath: sb_0.3.0_windows_amd64\sb.exe' "$inst"
 check "version manifest" grep -q "PackageVersion: 0.3.0" "$dir/out/Switchboard.Switchboard.yaml"
+check "description says to run sb uninstall" grep -q "'sb uninstall' before uninstalling" "$dir/out/Switchboard.Switchboard.locale.en-US.yaml"
 check "release notes link" grep -q "releases/tag/v0.3.0" "$dir/out/Switchboard.Switchboard.locale.en-US.yaml"
 missing_zip_fails() { ! sh "$script" v9.9.9 o/r "$dir/SHA256SUMS" "$dir/missing" 2>/dev/null; }
 check "fails when a zip is missing" missing_zip_fails
