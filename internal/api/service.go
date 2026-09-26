@@ -91,10 +91,15 @@ func NewService(opts Options) (*Service, error) {
 	s := &Service{opts: opts, started: time.Now(), hub: newHub(),
 		tlds: slices.Clone(opts.Config.TLDs), routes: slices.Clone(opts.Config.Routes)}
 	s.health = newChecker(opts.HealthInterval, s.healthChanged)
-	if n := s.countReserved(s.routes); n > 0 {
+	if n := count(s.routes, func(r config.Route) bool { return s.reservedBy(r.Name) != "" }); n > 0 {
 		// Older versions only reserved the dashboard's exact name. Keep such
 		// routes in routes.toml, so nothing is lost, but never serve them.
 		slog.Warn("routes.toml has routes under the dashboard's reserved name; they are not served. Find them with 'sb ls' and remove them with 'sb rm'",
+			"count", n)
+	}
+	if n := count(s.routes, func(r config.Route) bool { return checkPort(r.Port) != nil }); n > 0 {
+		// Older versions accepted these; the proxy answers them with 508.
+		slog.Warn("routes.toml has routes to port 80 or 443, where Switchboard itself listens; they answer 508 Loop Detected. Point them at your app's port with 'sb add <name> <port>'",
 			"count", n)
 	}
 	all, _, _ := s.merge(s.routes, nil)
@@ -174,8 +179,8 @@ func (s *Service) Put(r config.Route) (RouteStatus, bool, error) {
 	if err := s.checkReserved(r); err != nil {
 		return RouteStatus{}, false, err
 	}
-	if r.Port < 1 || r.Port > 65535 {
-		return RouteStatus{}, false, fmt.Errorf("%w: port %d out of range 1-65535", ErrInvalid, r.Port)
+	if err := checkPort(r.Port); err != nil {
+		return RouteStatus{}, false, fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 
 	s.mu.Lock()
@@ -295,6 +300,19 @@ func ports(routes []config.Route) []int {
 	return out
 }
 
+// checkPort rejects ports outside 1-65535, and the proxy's own default ports:
+// a route to one sends every request back to the proxy. The proxy detects
+// such loops itself too, since --http-addr can move it to other ports.
+func checkPort(port int) error {
+	switch {
+	case port < 1 || port > 65535:
+		return fmt.Errorf("port %d out of range 1-65535", port)
+	case port == 80 || port == 443:
+		return fmt.Errorf("port %d is where Switchboard itself listens, so the route would loop back to it; use your app's port, like 3000", port)
+	}
+	return nil
+}
+
 // checkReserved rejects routes for names Switchboard itself serves.
 func (s *Service) checkReserved(r config.Route) error {
 	if root := s.reservedBy(r.Name); root != "" {
@@ -317,11 +335,11 @@ func (s *Service) reservedBy(name string) string {
 	return ""
 }
 
-// countReserved counts the routes with reserved names.
-func (s *Service) countReserved(routes []config.Route) int {
+// count counts the routes for which f is true.
+func count(routes []config.Route, f func(config.Route) bool) int {
 	n := 0
 	for _, r := range routes {
-		if s.reservedBy(r.Name) != "" {
+		if f(r) {
 			n++
 		}
 	}

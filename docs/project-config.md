@@ -34,7 +34,8 @@ sb apply --down
   default one (`shop` → `shop.test`). Quote names that contain dots or `*`.
 - **Strict parsing.** Only `[routes]` is allowed at the top level, and only `port` and
   `redirect` inside a route. Anything else is an error naming the key, so typos are
-  caught. So are ports outside 1–65535, and ports written as strings.
+  caught. So are ports outside 1–65535, and ports written as strings. `sb apply`
+  refuses ports 80 and 443, where Switchboard itself listens.
 - **Duplicates.** Two entries that mean the same name (`"shop"` and `"shop.test"`) are
   an error.
 

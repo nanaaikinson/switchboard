@@ -33,6 +33,7 @@ func upstream(t *testing.T, id string) (*httptest.Server, int) {
 			"xfp":  r.Header.Get("X-Forwarded-Proto"),
 			"fwd":  r.Header.Get("Forwarded"),
 			"xrip": r.Header.Get("X-Real-IP"),
+			"hop":  strings.Join(r.Header.Values(HopHeader), ","),
 		})
 	}))
 	t.Cleanup(srv.Close)
@@ -165,6 +166,58 @@ func TestForwardedHeaders(t *testing.T) {
 		if got[k] != v {
 			t.Errorf("%s = %q, want %q", k, got[k], v)
 		}
+	}
+}
+
+func TestLoopDetected(t *testing.T) {
+	_, port := upstream(t, "app")
+	p, fr := front(t)
+	self := portOf(t, fr.Listener.Addr())
+	if err := p.SetRoutes([]config.Route{
+		{Name: "loop.test", Port: self}, // the proxy's own port
+		{Name: "redirect.test", Port: self, RedirectHTTPS: true},
+		{Name: "app.test", Port: port},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	redirecting := httptest.NewServer(RedirectHTTPS(p, 8443))
+	t.Cleanup(redirecting.Close)
+
+	tests := []struct {
+		name    string
+		srv     *httptest.Server
+		host    string
+		hdr     []string
+		status  int
+		wantHop string // what the upstream saw
+	}{
+		{"route to own port", fr, "loop.test", nil, http.StatusLoopDetected, ""},
+		{"redirecting route to own port", redirecting, "redirect.test", []string{HopHeader, "redirect.test"}, http.StatusLoopDetected, ""},
+		{"normal route gets the header", fr, "app.test", nil, 200, "app.test"},
+		{"a client's header is replaced", fr, "app.test", []string{HopHeader, "other.test"}, 200, "app.test"},
+		{"an app calling another route works", fr, "app.test", []string{HopHeader, "front.test"}, 200, "app.test"},
+		{"a client claiming this host is refused", fr, "APP.test.", []string{HopHeader, "app.test"}, http.StatusLoopDetected, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, body := get(t, tt.srv, tt.host, tt.hdr...)
+			if resp.StatusCode != tt.status {
+				t.Fatalf("status = %d, want %d: %s", resp.StatusCode, tt.status, body)
+			}
+			if tt.status == http.StatusLoopDetected {
+				if !strings.Contains(body, "loops back to Switchboard") || !strings.Contains(body, "sb add") {
+					t.Errorf("508 page: %s", body)
+				}
+				return
+			}
+			var got map[string]string
+			if err := json.Unmarshal([]byte(body), &got); err != nil || got["hop"] != tt.wantHop {
+				t.Errorf("upstream saw %s = %q (%v), want %q", HopHeader, got["hop"], err, tt.wantHop)
+			}
+		})
+	}
+	if logs := p.Logs("loop.test"); len(logs) != 2 || logs[0].Status != http.StatusLoopDetected {
+		t.Errorf("loop.test logs = %+v, want the looped request and the original, both 508", logs)
 	}
 }
 

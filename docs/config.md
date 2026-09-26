@@ -41,7 +41,7 @@ redirect_https = true
 | `schema_version` | int  | yes      | Config schema version. Currently `1`.      |
 | `tlds`           | list | no       | TLDs served besides the default `.test`. Only `{name = "local", mdns = true}` is allowed: the experimental .local mode ([mdns.md](mdns.md)). Configs without it are unchanged. |
 | `name`           | str  | yes      | Hostname. Unique, case-insensitive.        |
-| `port`           | int  | yes      | Local upstream port, 1–65535.              |
+| `port`           | int  | yes      | Local upstream port, 1–65535. See below.   |
 | `wildcard`       | bool | no       | Also match subdomains of `name`.           |
 | `redirect_https` | bool | no       | Redirect HTTP requests to HTTPS.           |
 | `file`           | str  | no       | Absolute path of the `switchboard.toml` the route was applied from ([project-config.md](project-config.md)); absent for `sb add` routes. |
@@ -50,6 +50,11 @@ redirect_https = true
 
 - A missing file is an empty route table.
 - Unknown keys are errors, so typos are caught instead of silently ignored.
+- `sb add` and `sb apply` refuse ports 80 and 443, where Switchboard itself listens.
+  Routes to them saved by older versions still load, with a warning in the daemon
+  log, and answer `508 Loop Detected` ([proxy.md](proxy.md)).
+- Routes under the dashboard's `switchboard.<tld>` saved by older versions still load
+  and stay in the file, with a warning, but aren't served ([dashboard.md](dashboard.md)).
 - A missing `schema_version` is an error.
 - A `schema_version` newer than this build supports is an error: upgrade `sb`.
 - Older schema versions will be migrated forward, and the old file backed up, once a

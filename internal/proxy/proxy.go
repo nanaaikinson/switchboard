@@ -143,7 +143,11 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if b := t.lookup(host); b != nil {
 		rec := &statusRecorder{ResponseWriter: w}
 		start := time.Now()
-		b.rp.ServeHTTP(rec, r)
+		if looped(r, host) {
+			loopDetected(rec, b.route.Port)
+		} else {
+			b.rp.ServeHTTP(rec, r)
+		}
 		if rec.status == 0 && r.Header.Get("Upgrade") != "" {
 			rec.status = http.StatusSwitchingProtocols // hijacked, so never seen here
 		}
@@ -154,6 +158,19 @@ func (p *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	notFound(w, host, t)
+}
+
+// HopHeader is set on every proxied request to the host it was proxied for.
+// A route whose port is the proxy's own (myapp.test -> 80) sends the request
+// straight back with the same Host; without this it would recurse until the
+// daemon runs out of file descriptors. The value is the host rather than a
+// flag so that an app which calls another route and copies its incoming
+// headers, like a dev server proxying /api to api.myapp.test, still works.
+const HopHeader = "X-Switchboard-Hop"
+
+// looped reports whether r was already proxied once for host.
+func looped(r *http.Request, host string) bool {
+	return slices.Contains(r.Header.Values(HopHeader), host)
 }
 
 // lookup returns the exact match for host, else the longest wildcard match.
@@ -186,6 +203,8 @@ func (p *ReverseProxy) newReverseProxy(port int) *httputil.ReverseProxy {
 			pr.Out.Header.Del("Forwarded")
 			pr.Out.Header.Del("X-Real-IP")
 			pr.SetXForwarded() // incoming X-Forwarded-* are dropped first
+			// Replaces any the client sent, so upstreams only see ours.
+			pr.Out.Header.Set(HopHeader, normalizeHost(pr.In.Host))
 		},
 		Transport: p.transport,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {

@@ -19,7 +19,8 @@ func RedirectHTTPS(p Proxy, httpsPort int) http.Handler {
 			// Wildcard routes match any first label, so only echo real
 			// hostnames into Location. (Go already rejects "/" and "@".)
 			host := normalizeHost(r.Host)
-			if route, _, ok := p.Lookup(host); ok && route.RedirectHTTPS && config.ValidHostname(host) {
+			// A looped request goes on to p, which answers 508.
+			if route, _, ok := p.Lookup(host); ok && route.RedirectHTTPS && config.ValidHostname(host) && !looped(r, host) {
 				if httpsPort != 443 {
 					host = net.JoinHostPort(host, strconv.Itoa(httpsPort))
 				}

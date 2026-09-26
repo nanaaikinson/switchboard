@@ -190,6 +190,8 @@ func TestApplyRejectsBadInput(t *testing.T) {
 		"relative file": {File: "switchboard.toml", Routes: []config.Route{rt("web", 1)}},
 		"bad name":      {File: fileA, Routes: []config.Route{rt("not valid", 1)}},
 		"bad port":      {File: fileA, Routes: []config.Route{rt("web", 70000)}},
+		"proxy port":    {File: fileA, Routes: []config.Route{rt("web", 80)}},
+		"https port":    {File: fileA, Routes: []config.Route{rt("web", 443)}},
 		"same name":     {File: fileA, Routes: []config.Route{rt("web", 1), rt("web.test", 2)}},
 	} {
 		if _, err := s.Apply(req); !errors.Is(err, ErrInvalid) {

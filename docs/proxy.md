@@ -29,6 +29,12 @@ wildcard are rejected.
   client sent are dropped, so an app can trust them. Then
   `X-Forwarded-For` (client IP), `X-Forwarded-Host` (original host) and
   `X-Forwarded-Proto` (`http` or `https`) are set.
+- **Loop protection:** every proxied request carries `X-Switchboard-Hop: <host>`,
+  replacing any the client sent. A request that arrives with that header for its own
+  host has come back from a route pointing at the proxy's own port (`myapp.test` → 80),
+  so it's answered with `508 Loop Detected` instead of being proxied again. Apps that
+  call another route and copy their incoming headers still work, because the host
+  differs.
 - **WebSockets and upgrades:** `Connection: Upgrade` requests are tunnelled both ways.
 - **Streaming:** server-sent events (`text/event-stream`) and responses without a
   `Content-Length` are flushed to the client as they arrive.
@@ -43,6 +49,7 @@ wildcard are rejected.
 | No route, and the host is under any other TLD | 404 | Shows no routes. A DNS-rebinding page (`evil.com` → 127.0.0.1) cannot read the route table. |
 | Route found but nothing listening on the port | 502 | "Nothing is listening on port N", with next steps |
 | Upstream closed the connection or sent an invalid response | 502 | Names the port and suggests checking the app's logs |
+| The route's port is the proxy's own, so the request came back | 508 | Says the route loops and to point it at the app's port |
 
 ## HTTPS
 
