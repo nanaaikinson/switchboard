@@ -152,6 +152,7 @@ mod unix {
         let stream = UnixStream::connect(socket_path())
             .await
             .map_err(|e| format!("the Switchboard daemon isn't running ({e})"))?;
+        check_peer(&stream)?;
         let (mut sender, conn) = http1::handshake(TokioIo::new(stream))
             .await
             .map_err(|e| e.to_string())?;
@@ -164,6 +165,47 @@ mod unix {
             .body(Full::new(Bytes::from(body.unwrap_or_default())))
             .map_err(|e| e.to_string())?;
         sender.send_request(req).await.map_err(|e| e.to_string())
+    }
+
+    /// Refuses a socket served by another user: with the config dir somewhere
+    /// they can write, they could stand in for the daemon and collect what the
+    /// tray sends, such as dashboard logins.
+    pub(super) fn check_peer(stream: &UnixStream) -> Result<(), String> {
+        let theirs = stream
+            .peer_cred()
+            .map_err(|e| format!("check who serves {}: {e}", socket_path().display()))?
+            .uid();
+        if theirs != own_uid()? {
+            return Err(format!(
+                "{} is served by another user (uid {theirs}), not the Switchboard daemon; refusing to use it",
+                socket_path().display()
+            ));
+        }
+        Ok(())
+    }
+
+    /// This process's effective uid: the owner of a file it creates. (std has
+    /// no getuid, and macOS gives no peer credentials on a socket pair.)
+    fn own_uid() -> Result<u32, String> {
+        use std::os::unix::fs::MetadataExt;
+        static UID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+        if let Some(uid) = UID.get() {
+            return Ok(*uid);
+        }
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let path = std::env::temp_dir().join(format!(".sb-tray-uid-{}-{nonce}", std::process::id()));
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| format!("find this user's uid: {e}"))?;
+        let uid = file.metadata().map(|m| m.uid());
+        let _ = std::fs::remove_file(&path);
+        let uid = uid.map_err(|e| format!("find this user's uid: {e}"))?;
+        Ok(*UID.get_or_init(|| uid))
     }
 
     async fn call(method: &str, path: &str, body: Option<Vec<u8>>) -> Result<Bytes, String> {
@@ -362,6 +404,20 @@ mod tests {
             "invalid route: bad"
         );
         assert_eq!(api_error(502, b"<html>"), "HTTP 502");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn check_peer_accepts_our_own_daemon() {
+        let dir = std::env::temp_dir().join(format!("sbpeer{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("sb.sock");
+        let _ = std::fs::remove_file(&path);
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let (client, _served) = tokio::join!(tokio::net::UnixStream::connect(&path), listener.accept());
+        let r = super::unix::check_peer(&client.unwrap());
+        assert!(r.is_ok(), "{r:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
