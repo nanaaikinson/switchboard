@@ -31,13 +31,13 @@ param(
 
 # The release key that signs SHA256SUMS (SHA256SUMS.minisig): the "RW..." line
 # of its .pub file, the same value as the SB_UPDATE_PUBLIC_KEY repository
-# variable. Keep it the same as MINISIGN_PUBKEY in install.sh.
+# variable. Keep it the same as MINISIGN_PUBKEY in install.sh and ReleaseKey in
+# internal/update/key.go (a test checks).
 #
-# Empty until the release key exists (docs/backlog.md). While it's empty, only
-# the checksum is verified, with a warning. Once it's set, a release whose
-# signature is missing or invalid is refused, and so is installing without
-# minisign, unless $env:SB_INSECURE_SKIP_SIGNATURE = '1'.
-$SbMinisignPubkey = ''
+# A release whose signature is missing or invalid is refused, and so is
+# installing without minisign, unless $env:SB_INSECURE_SKIP_SIGNATURE = '1'.
+# With the key emptied, only the checksum is verified, with a warning.
+$SbMinisignPubkey = 'RWTezUT5l2DDkBWjTKayvSXpwTUkehmo3D8dXmRrmdv8IX6AT94tI15d'
 $SbRepo = 'nanaaikinson/switchboard'
 
 function Write-SbInfo {

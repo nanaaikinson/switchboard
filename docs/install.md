@@ -171,10 +171,14 @@ Variables).
 2. Store it as the `MINISIGN_SECRET_KEY` secret. The release workflow then signs
    `SHA256SUMS` as `SHA256SUMS.minisig` ([releasing.md](releasing.md)).
 3. Put the public key (the `RW...` line, the same as `SB_UPDATE_PUBLIC_KEY`) in
-   `MINISIGN_PUBKEY` in `install/install.sh` and `$SbMinisignPubkey` in
-   `install/install.ps1`. Both are empty so far.
+   `MINISIGN_PUBKEY` in `install/install.sh`, `$SbMinisignPubkey` in
+   `install/install.ps1` and `ReleaseKey` in `internal/update/key.go`.
+   `go test ./internal/update` fails if the three differ.
 
-After step 3, the scripts fail closed: they refuse a release without a valid signature
+Steps 1 and 3 are done: the key is `RWTezUT5l2DDkBWjTKayvSXpwTUkehmo3D8dXmRrmdv8IX6AT94tI15d`.
+With it pinned, the scripts fail closed: they refuse a release without a valid signature
 whose trusted comment names it, and refuse to run without `minisign` unless
-`SB_INSECURE_SKIP_SIGNATURE=1`. So finish step 2 and cut one signed release before
-merging step 3. `test/install/install-test.sh` and `install-test.ps1` test both states.
+`SB_INSECURE_SKIP_SIGNATURE=1`. Releases made before step 2 (up to `v0.1.0-rc.2`,
+which has no `SHA256SUMS` either) can't be installed with the scripts; the first
+release after step 2 can. `test/install/install-test.sh` and `install-test.ps1` test
+both states.

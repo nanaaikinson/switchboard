@@ -15,13 +15,13 @@ set -eu
 REPO="nanaaikinson/switchboard"
 # The release key that signs SHA256SUMS (SHA256SUMS.minisig): the "RW..." line
 # of its .pub file, the same value as the SB_UPDATE_PUBLIC_KEY repository
-# variable. Keep it the same as $SbMinisignPubkey in install.ps1.
+# variable. Keep it the same as $SbMinisignPubkey in install.ps1 and
+# ReleaseKey in internal/update/key.go (a test checks).
 #
-# Empty until the release key exists (docs/backlog.md). While it's empty, only
-# the checksum is verified, with a warning. Once it's set, a release whose
-# signature is missing or invalid is refused, and so is installing without
-# minisign, unless SB_INSECURE_SKIP_SIGNATURE=1.
-MINISIGN_PUBKEY=""
+# A release whose signature is missing or invalid is refused, and so is
+# installing without minisign, unless SB_INSECURE_SKIP_SIGNATURE=1. With the
+# key emptied, only the checksum is verified, with a warning.
+MINISIGN_PUBKEY="RWTezUT5l2DDkBWjTKayvSXpwTUkehmo3D8dXmRrmdv8IX6AT94tI15d"
 
 say() { printf 'sb-install: %s\n' "$*"; }
 warn() { printf 'sb-install: warning: %s\n' "$*" >&2; }

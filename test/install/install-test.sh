@@ -74,9 +74,12 @@ chmod +x "$dir/minisign"
 with_minisign() { ln -sf "$dir/minisign" "$bin/minisign"; }
 without_minisign() { rm -f "$bin/minisign"; }
 
-# install.sh as it will be once the release key is pinned.
-sed 's/^MINISIGN_PUBKEY=""$/MINISIGN_PUBKEY="RWfake-release-key"/' "$script" >"$dir/pinned.sh"
-check "the key slot is where the pinned test expects it" grep -q '^MINISIGN_PUBKEY="RWfake-release-key"$' "$dir/pinned.sh"
+# install.sh with the test key pinned in place of the real one, and with no
+# key, as it was before the release key existed.
+sed 's/^MINISIGN_PUBKEY=".*"$/MINISIGN_PUBKEY="RWfake-release-key"/' "$script" >"$dir/pinned.sh"
+sed 's/^MINISIGN_PUBKEY=".*"$/MINISIGN_PUBKEY=""/' "$script" >"$dir/unpinned.sh"
+check "the key slot is where the tests expect it" grep -q '^MINISIGN_PUBKEY="RWfake-release-key"$' "$dir/pinned.sh"
+check "install.sh pins a release key" grep -q '^MINISIGN_PUBKEY="RW[A-Za-z0-9+/]\{54\}"$' "$script"
 
 # run SCRIPT [VAR=value...]: installs v1.2.3 into a fresh HOME; the output is
 # in $dir/out.
@@ -94,7 +97,7 @@ not_installed() { ! installed; }
 says() { grep -qF -- "$1" "$dir/out"; }
 
 without_minisign
-check "no key: installs on the checksum" run "$script"
+check "no key: installs on the checksum" run "$dir/unpinned.sh"
 check "no key: sb is installed" installed
 check "no key: warns that the release is not signature-verified" says "warning: this release is NOT signature-verified"
 check "curl is limited to HTTPS, redirects included" grep -q -- "--proto =https --proto-redir =https --tlsv1.2" "$dir/curl.log"
