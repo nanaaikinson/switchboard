@@ -197,3 +197,42 @@ func TestAnnouncerNoBackends(t *testing.T) {
 		t.Errorf("error = %q", st.Error)
 	}
 }
+
+// lossyPub is a fakePub whose backend can drop its names.
+type lossyPub struct {
+	fakePub
+	lost chan struct{}
+}
+
+func (p *lossyPub) Lost() <-chan struct{} { return p.lost }
+
+func TestAnnouncerReopensAfterLoss(t *testing.T) {
+	first := &lossyPub{lost: make(chan struct{})}
+	second := &fakePub{}
+	opens := 0
+	var mu sync.Mutex
+	a := NewAnnouncer(Backend{Name: "fake", Open: func() (Publisher, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		opens++
+		if opens == 1 {
+			return first, nil
+		}
+		return second, nil
+	}})
+	states, _ := run(t, a)
+	a.Update(true, []string{"a.local"})
+	waitState(t, states, func(st State) bool { return len(st.Announced) == 1 })
+
+	close(first.lost) // e.g. mDNSResponder restarted
+	deadline := time.Now().Add(2 * time.Second)
+	for !slices.Equal(second.last(), []string{"a.local"}) {
+		if time.Now().After(deadline) {
+			t.Fatal("names not announced again after the backend lost them")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !first.isClosed() {
+		t.Error("lost publisher not closed")
+	}
+}

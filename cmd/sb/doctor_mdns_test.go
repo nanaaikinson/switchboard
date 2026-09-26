@@ -96,6 +96,8 @@ func TestDoctorMDNS(t *testing.T) {
 				}}}})
 			mustRun(t, "tld", "add", "local", "--mdns")
 			addRoute(t, "", "myapp.local", live(t))
+			wild := live(t)
+			addRoute(t, "", "*.tenants.local", wild)
 			useDiag(t, fakeDiag{addrs: []string{"127.0.0.1"}, localDNSErr: tt.localDNSErr})
 
 			var out string
@@ -107,6 +109,10 @@ func TestDoctorMDNS(t *testing.T) {
 				if !strings.Contains(out, w+"\n") {
 					t.Errorf("output missing %q:\n%s", w, out)
 				}
+			}
+			// Wildcards under .local get no split-DNS advice: they just can't be announced.
+			if w := fmt.Sprintf("[PASS] *.tenants.local: upstream 127.0.0.1:%d is up; names under it can't be announced over mDNS", wild); !strings.Contains(out, w+"\n") {
+				t.Errorf("output missing %q:\n%s", w, out)
 			}
 			if strings.Contains(out, "resolver .local") || strings.Contains(out, "https probe.local") {
 				t.Errorf("split DNS checks run for .local:\n%s", out)
