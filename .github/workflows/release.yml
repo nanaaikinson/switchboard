@@ -56,8 +56,9 @@ jobs:
           go-version-file: go.mod
 
       # Builds the archives, SHA256SUMS and .deb/.rpm packages from
-      # .goreleaser.yaml, and publishes the GitHub release. Tags with a
-      # pre-release part (v0.2.0-rc.1) are marked as pre-releases.
+      # .goreleaser.yaml, publishes the GitHub release, and pushes the
+      # Homebrew cask. Tags with a pre-release part (v0.2.0-beta.1) are
+      # marked as pre-releases and don't update the cask.
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -68,6 +69,26 @@ jobs:
           GORELEASER_CURRENT_TAG: ${{ inputs.tag || github.ref_name }}
           # Public, so a repository variable: enables sb self-update.
           SB_UPDATE_PUBLIC_KEY: ${{ vars.SB_UPDATE_PUBLIC_KEY }}
+          # Push access to nanaaikinson/homebrew-tap; unset skips the cask.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      # SHA256SUMS.minisig: one signature over every archive's checksum,
+      # made with the release key (docs/updates.md). Skipped until it is set.
+      - name: Sign SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            echo "::notice::MINISIGN_SECRET_KEY is not set; SHA256SUMS is not signed."
+            exit 0
+          fi
+          sudo apt-get install -y -qq minisign
+          key=$(mktemp) && trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          minisign -S -s "$key" -m dist/SHA256SUMS -x dist/SHA256SUMS.minisig -t "switchboard $TAG SHA256SUMS" < /dev/null
+          gh release upload "$TAG" dist/SHA256SUMS.minisig --clobber
 
       # Attestations are unavailable for user-owned private repositories.
       - uses: actions/attest-build-provenance@v4

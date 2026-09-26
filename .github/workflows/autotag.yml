@@ -55,6 +55,7 @@ jobs:
       id-token: write     # sign build provenance
       attestations: write # publish build provenance
     uses: ./.github/workflows/release.yml
+    secrets: inherit # signing keys and the tap token; a called workflow gets none otherwise
     with:
       tag: ${{ needs.tag.outputs.tag }}
       skip_ci: true

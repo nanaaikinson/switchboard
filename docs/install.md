@@ -1,5 +1,14 @@
 # Installing sb
 
+## Homebrew (macOS and Linux)
+
+```bash
+brew install nanaaikinson/tap/sb
+```
+
+This installs the prebuilt `sb` from the latest stable release. Then run `sb setup`.
+Pre-releases are never published to the tap. Update with `brew upgrade sb`.
+
 ## macOS and Linux
 
 ```bash
@@ -101,7 +110,7 @@ An error doesn't close the window when run through `iex`. Then run `sb setup`; s
 
 `sb self-update` installs the latest release in place and keeps the previous one as
 `sb.old`; `sb rollback` goes back. See [updates.md](updates.md). Installs from a
-package manager update with that package manager instead (`brew upgrade`, `apt`,
+package manager update with that package manager instead (`brew upgrade sb`, `apt`,
 `dnf`), and `sb self-update` says so.
 
 ## Uninstalling
@@ -115,8 +124,8 @@ Variables).
 ## Enabling signature checks (maintainers)
 
 1. Generate a key pair offline with `minisign -G`. Keep the secret key out of the repo.
-2. Store it as a release-workflow secret, and have the release job sign `SHA256SUMS` to
-   produce `SHA256SUMS.minisig`.
+2. Store it as the `MINISIGN_SECRET_KEY` secret. The release workflow then signs
+   `SHA256SUMS` as `SHA256SUMS.minisig` ([releasing.md](releasing.md)).
 3. Put the public key (the `RW...` line) in `MINISIGN_PUBKEY` in `install/install.sh`
    and `$SbMinisignPubkey` in `install/install.ps1`.
 

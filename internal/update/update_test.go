@@ -279,6 +279,8 @@ func TestDetectManaged(t *testing.T) {
 		{"/opt/homebrew/Cellar/switchboard/0.2.0/bin/sb", System{ReadFile: none}, "Homebrew"},
 		{"/usr/local/Cellar/switchboard/0.2.0/bin/sb", System{ReadFile: none}, "Homebrew"},
 		{"/home/linuxbrew/.linuxbrew/bin/sb", System{ReadFile: none}, "Homebrew"},
+		{"/usr/local/Caskroom/sb/0.2.0/sb", System{ReadFile: none}, "Homebrew"}, // the cask, Intel Macs
+		{"/opt/homebrew/Caskroom/sb/0.2.0/sb", System{ReadFile: none}, "Homebrew"},
 		{`C:\Users\me\AppData\Local\Microsoft\WinGet\Packages\Switchboard_x\sb.exe`, System{ReadFile: none}, "winget"},
 		{`C:\Users\me\scoop\apps\switchboard\current\sb.exe`, System{ReadFile: none}, "Scoop"},
 		{"/Applications/Switchboard.app/Contents/MacOS/sb", System{ReadFile: none}, "the Switchboard app"},

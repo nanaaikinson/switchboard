@@ -39,8 +39,9 @@ func DetectManaged(exe string, sys System) *Managed {
 	}
 	p := strings.ToLower(strings.ReplaceAll(exe, `\`, "/")) // Windows paths too, whatever the OS
 	switch {
-	case strings.Contains(p, "/cellar/") || strings.HasPrefix(p, "/opt/homebrew/") || strings.HasPrefix(p, "/home/linuxbrew/.linuxbrew/"):
-		return &Managed{"Homebrew", "brew upgrade switchboard"}
+	case strings.Contains(p, "/cellar/") || strings.Contains(p, "/caskroom/") ||
+		strings.HasPrefix(p, "/opt/homebrew/") || strings.HasPrefix(p, "/home/linuxbrew/.linuxbrew/"):
+		return &Managed{"Homebrew", "brew upgrade sb"} // the nanaaikinson/tap cask
 	case strings.Contains(p, "/microsoft/winget/") || strings.Contains(p, "/winget/packages/") || strings.Contains(p, "/windowsapps/"):
 		return &Managed{"winget", "winget upgrade switchboard"}
 	case strings.Contains(p, "/scoop/apps/"):

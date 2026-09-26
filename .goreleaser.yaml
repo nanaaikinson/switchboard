@@ -1,4 +1,5 @@
-# GoReleaser config: archives, SHA256SUMS, and .deb/.rpm packages (nfpm).
+# GoReleaser config: archives, SHA256SUMS, .deb/.rpm packages (nfpm) and the
+# Homebrew cask.
 # Used by .github/workflows/release.yml and `make dist`. Archive names and the
 # SHA256SUMS file are what install/install.sh and install.ps1 download; keep them in sync.
 version: 2
@@ -49,6 +50,8 @@ nfpms:
       ports, with a local DNS server, a reverse proxy and a name-constrained
       local CA. Run 'sb setup' as your user after installing.
     section: devel
+    # No systemd units: 'sb setup' writes them for the user who runs it and
+    # 'sb uninstall' removes them, so the package never owns those files.
     scripts:
       postinstall: install/packaging/postinstall.sh
       preremove: install/packaging/preremove.sh
@@ -58,8 +61,58 @@ nfpms:
       rpm:
         recommends: [nss-tools]
 
+# `brew install nanaaikinson/tap/sb`: a cask with the prebuilt macOS binary.
+# Not published for pre-releases (skip_upload: auto), or while the
+# HOMEBREW_TAP_TOKEN secret is unset. See docs/releasing.md.
+homebrew_casks:
+  - name: sb
+    ids: [sb]
+    binaries: [sb]
+    homepage: https://github.com/nanaaikinson/switchboard
+    description: Map local ports to trusted HTTPS names
+    caveats: "Run 'sb setup' once to set up .test names and trusted HTTPS."
+    repository:
+      owner: nanaaikinson
+      name: homebrew-tap
+      token: '{{ index .Env "HOMEBREW_TAP_TOKEN" }}'
+    commit_author:
+      name: github-actions[bot]
+      email: 41898282+github-actions[bot]@users.noreply.github.com
+    commit_msg_template: "sb {{ .Tag }}"
+    skip_upload: '{{ if index .Env "HOMEBREW_TAP_TOKEN" }}auto{{ else }}true{{ end }}'
+    # The binary isn't notarized yet, so Gatekeeper would block it; brew
+    # has already checked the download against the cask's SHA-256.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/sb"]
+          end
+
+# Release notes, grouped by conventional-commit type. autotag.yml picks the
+# version from the same commit types.
 changelog:
-  use: github-native
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - '^(docs|chore|ci|test|refactor|style|build)(\(.*\))?:'
+      - "^Merge "
+  groups:
+    - title: Breaking changes
+      regexp: '^[a-z]+(\(.*\))?!:'
+      order: 0
+    - title: Features
+      regexp: '^feat(\(.*\))?:'
+      order: 1
+    - title: Fixes
+      regexp: '^fix(\(.*\))?:'
+      order: 2
+    - title: Performance
+      regexp: '^perf(\(.*\))?:'
+      order: 3
+    - title: Other
+      order: 999
 
 release:
   prerelease: auto

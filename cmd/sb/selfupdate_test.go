@@ -203,7 +203,7 @@ func TestSelfUpdateRefuses(t *testing.T) {
 			e := newUpdateEnv(t, newSigner(t), "v1.1.0", script("v1.1.0"), nil)
 			selfPath = func() (string, error) { return "/opt/homebrew/Cellar/switchboard/1.0.0/bin/sb", nil }
 			return e
-		}, "installed by Homebrew, which keeps it up to date; instead run: brew upgrade switchboard", ""},
+		}, "installed by Homebrew, which keeps it up to date; instead run: brew upgrade sb", ""},
 		"development build": {func(t *testing.T) *updateEnv {
 			e := newUpdateEnv(t, newSigner(t), "v1.1.0", script("v1.1.0"), nil)
 			version = "dev"
