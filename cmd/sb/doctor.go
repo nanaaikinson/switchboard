@@ -474,6 +474,10 @@ func checkRoutes(ctx context.Context, p platform.Platform, st api.Status, up boo
 	if len(routes) == 0 {
 		return []checkResult{{status: checkSkip, name: "routes", detail: "none; add one with: sb add myapp 3000"}}
 	}
+	mdnsTLDs := st.MDNS.TLDs
+	if !up {
+		mdnsTLDs = configMDNSTLDs()
+	}
 
 	rs := make([]checkResult, len(routes))
 	var wg sync.WaitGroup
@@ -491,7 +495,13 @@ func checkRoutes(ctx context.Context, p platform.Platform, st api.Status, up boo
 				return
 			}
 			_ = c.Close()
-			if base, star := strings.CutPrefix(r.Name, "*."); star || r.Wildcard {
+			base, star := strings.CutPrefix(r.Name, "*.")
+			overMDNS := slices.ContainsFunc(mdnsTLDs, func(t string) bool { return strings.HasSuffix(base, "."+t) })
+			if (star || r.Wildcard) && overMDNS {
+				rs[i] = pass(name, "upstream "+upstream+" is up; names under it can't be announced over mDNS")
+				return
+			}
+			if star || r.Wildcard {
 				probe := "sb-probe." + base
 				addrs, err := p.LookupHost(ctx, probe)
 				if !errors.Is(err, errors.ErrUnsupported) && !slices.Contains(addrs, "127.0.0.1") {

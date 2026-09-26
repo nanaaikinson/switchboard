@@ -34,6 +34,13 @@ type Publisher interface {
 	Close() error
 }
 
+// A Publisher may also implement Lost. Its channel is closed when the
+// backend drops the announced names, for example because the OS responder
+// restarted; the announcer then opens the backend again.
+type lossNotifier interface {
+	Lost() <-chan struct{}
+}
+
 // Backend is one way to announce names, such as the OS's responder.
 type Backend struct {
 	Name      string // shown in status, e.g. "go"
@@ -144,11 +151,18 @@ func (a *Announcer) Run(ctx context.Context) {
 			slog.Warn("mdns: names not announced; retrying", "err", err, "retry", retry)
 			timer = time.After(retry)
 		}
+		var lost <-chan struct{}
+		if ln, ok := pub.(lossNotifier); ok {
+			lost = ln.Lost()
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-a.wake:
 		case <-timer:
+		case <-lost:
+			slog.Warn("mdns: backend dropped the announced names; announcing again", "backend", backend.Name)
+			closePub()
 		}
 	}
 }

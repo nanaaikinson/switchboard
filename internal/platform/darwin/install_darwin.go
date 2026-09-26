@@ -55,6 +55,7 @@ type Options struct {
 	HelperDNSAddr string                                            // "" is dns.ResolverAddr
 	Trust         func(*x509.Certificate) error                     // nil is truststore.Install (System keychain)
 	NSS           func() (NSSStore, error)                          // nil is truststore.NewNSSTrust
+	DNSSDSocket   string                                            // "" is mDNSResponder's socket
 }
 
 // Platform implements platform.Platform for macOS.

@@ -19,8 +19,9 @@ func newTLDCmd() *cobra.Command {
 		Long: `Switchboard serves .test through split DNS, set up by 'sb setup'.
 
 .local mode (EXPERIMENTAL) is opt-in: 'sb tld add local --mdns' makes the
-daemon announce every route under .local over multicast DNS, pointing at
-127.0.0.1 and ::1, on the loopback interface only. Names are announced when routes are
+daemon announce every route under .local over multicast DNS (through
+mDNSResponder on macOS, Avahi on Linux, a built-in responder elsewhere),
+pointing at 127.0.0.1 and ::1, on the loopback interface only. Names are announced when routes are
 added, and withdrawn when they are removed or the daemon stops; nothing on
 the system is changed.
 

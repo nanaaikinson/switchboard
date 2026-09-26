@@ -34,15 +34,19 @@ sb tld rm local             # turn it off (remove its routes first)
 
 Responders, tried in order:
 
-| Backend | Where | Notes |
-| ------- | ----- | ----- |
-| `go`    | macOS, Windows | Built in (hashicorp/mdns). Answers queries and sends announcements and goodbyes on the loopback interface. Resolvers that don't query over loopback won't see it. |
+| Backend | Where | How |
+| ------- | ----- | --- |
+| `mDNSResponder` | macOS | Local-only records (`kDNSServiceInterfaceIndexLocalOnly`) registered over mDNSResponder's socket, `/var/run/mDNSResponder`, speaking its client protocol directly (no cgo). mDNSResponder withdraws them when the daemon's connection closes. |
+| `Avahi` | Linux | One D-Bus entry group per name on the system bus, pinned to the loopback interface index, without reverse (PTR) records. Needs `avahi-daemon` and, for lookups, `libnss-mdns`. |
+| `go` | macOS (fallback), Windows | Built in (hashicorp/mdns). Answers queries and sends announcements and goodbyes on the loopback interface. Resolvers that don't query over loopback won't see it. |
 
-On Linux the built-in responder is not used: Linux delivers multicast to every socket on
-port 5353 whatever interface it joined, so its answers could reach the network, and the
-loopback interface has no multicast by default. Until the native backends land (macOS
-mDNSResponder, Linux Avahi), `sb ls` and `sb doctor` report that .local names are not
-announced there.
+The built-in responder is never used on Linux: Linux delivers multicast to every socket
+on port 5353 whatever interface it joined, so its answers could reach the network, and
+the loopback interface has no multicast by default. Without Avahi, `.local` names are
+not announced there.
+
+When mDNSResponder or avahi-daemon restarts, it forgets the daemon's records; the daemon
+notices and announces them again.
 
 If no responder starts, the daemon keeps running, retries every 10 seconds, and reports
 the error in `sb ls`, `sb doctor`, the dashboard and `GET /v1/status` (`mdns.error`).
