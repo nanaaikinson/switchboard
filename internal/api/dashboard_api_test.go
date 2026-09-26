@@ -29,20 +29,69 @@ func newServiceWith(t *testing.T, edit func(*Options)) *Service {
 }
 
 func TestReservedNames(t *testing.T) {
-	s := newServiceWith(t, func(o *Options) { o.Reserved = []string{"switchboard.test"} })
-	if _, _, err := s.Put(config.Route{Name: "switchboard", Port: 1}); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "reserved") {
-		t.Errorf("Put: %v", err)
+	tests := []struct {
+		name     string
+		wildcard bool
+		reserved bool
+	}{
+		{"switchboard", false, true},
+		{"switchboard.test", false, true},
+		{"api.switchboard", false, true},
+		{"a.b.switchboard", false, true},
+		{"*.switchboard", false, true},
+		{"switchboard", true, true},
+		{"myswitchboard", false, false},
+		{"switchboard.myapp", false, false},
 	}
-	if _, _, err := s.Put(config.Route{Name: "api.switchboard", Port: 1}); err != nil {
-		t.Errorf("a subdomain is fine: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newServiceWith(t, func(o *Options) { o.Reserved = []string{"switchboard.test"} })
+			_, _, err := s.Put(config.Route{Name: tt.name, Port: 1, Wildcard: tt.wildcard})
+			if got := errors.Is(err, ErrInvalid) && strings.Contains(err.Error(), "reserved"); got != tt.reserved || (!tt.reserved && err != nil) {
+				t.Errorf("Put: %v, want reserved %v", err, tt.reserved)
+			}
+
+			s = newServiceWith(t, func(o *Options) { o.Reserved = []string{"switchboard.test"} })
+			res, err := s.Apply(ApplyRequest{File: absPath("/p/switchboard.toml"), Routes: []config.Route{{Name: tt.name, Port: 2, Wildcard: tt.wildcard}}})
+			if got := len(res.Conflicts) == 1 && res.Conflicts[0].Owner == "the Switchboard dashboard"; err != nil || got != tt.reserved {
+				t.Errorf("Apply: %+v, %v, want reserved %v", res, err, tt.reserved)
+			}
+
+			s = newServiceWith(t, func(o *Options) { o.Reserved = []string{"switchboard.test"} })
+			s.SetDocker(DockerStatus{Enabled: true, Connected: true}, []DockerRoute{{
+				Route: config.Route{Name: s.qualify(tt.name), Port: 3, Wildcard: tt.wildcard}, Container: "c",
+			}})
+			sk := s.Status().Docker.Skipped
+			if got := len(sk) == 1 && strings.Contains(sk[0].Reason, "the Switchboard dashboard"); got != tt.reserved {
+				t.Errorf("docker skipped = %+v, want reserved %v", sk, tt.reserved)
+			}
+		})
 	}
-	res, err := s.Apply(ApplyRequest{File: absPath("/p/switchboard.toml"), Routes: []config.Route{{Name: "switchboard", Port: 2}}})
-	if err != nil || len(res.Conflicts) != 1 || res.Conflicts[0].Owner != "the Switchboard dashboard" {
-		t.Errorf("Apply: %+v, %v", res, err)
+}
+
+// Older versions only reserved switchboard.<tld> itself. Routes under it in an
+// old routes.toml still load and stay saved, but are never served.
+func TestReservedRoutesFromOldConfigAreKeptNotServed(t *testing.T) {
+	fp := &fakeProxy{}
+	s := newServiceWith(t, func(o *Options) {
+		o.Reserved = []string{"switchboard.test"}
+		o.Proxy = fp
+		o.Config.Routes = []config.Route{{Name: "api.switchboard.test", Port: 1}, {Name: "web.test", Port: 2}}
+	})
+	if got := routeNames(fp.get()); got != "web.test" {
+		t.Errorf("served = %s, want only web.test", got)
 	}
-	s.SetDocker(DockerStatus{Enabled: true, Connected: true}, []DockerRoute{dr("switchboard.test", 3, "switchboard")})
-	if sk := s.Status().Docker.Skipped; len(sk) != 1 || !strings.Contains(sk[0].Reason, "the Switchboard dashboard") {
-		t.Errorf("docker skipped = %+v", sk)
+	if _, _, err := s.Put(config.Route{Name: "other", Port: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if got := routeNames(fp.get()); got != "web.test,other.test" {
+		t.Errorf("served after put = %s", got)
+	}
+	if got := routeNames(loadRoutes(t, s.opts.ConfigPath)); got != "api.switchboard.test,web.test,other.test" {
+		t.Errorf("saved = %s, want the old route kept", got)
+	}
+	if _, err := s.Delete("api.switchboard"); err != nil {
+		t.Errorf("the old route can still be removed: %v", err)
 	}
 }
 

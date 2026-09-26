@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,7 +37,8 @@ type Options struct {
 	TLDs           []string
 	Version        string
 	HealthInterval time.Duration // 0 means DefaultHealthInterval
-	// Reserved names can't be routes, e.g. the dashboard's switchboard.<tld>.
+	// Reserved names, and every name under them, can't be routes, e.g. the
+	// dashboard's switchboard.<tld> and *.switchboard.<tld>.
 	Reserved []string
 	// Logs returns a route's recent requests; nil means none are kept.
 	Logs func(name string) []proxy.AccessLog
@@ -88,10 +91,17 @@ func NewService(opts Options) (*Service, error) {
 	s := &Service{opts: opts, started: time.Now(), hub: newHub(),
 		tlds: slices.Clone(opts.Config.TLDs), routes: slices.Clone(opts.Config.Routes)}
 	s.health = newChecker(opts.HealthInterval, s.healthChanged)
-	if err := opts.Proxy.SetRoutes(s.routes); err != nil {
+	if n := s.countReserved(s.routes); n > 0 {
+		// Older versions only reserved the dashboard's exact name. Keep such
+		// routes in routes.toml, so nothing is lost, but never serve them.
+		slog.Warn("routes.toml has routes under the dashboard's reserved name; they are not served. Find them with 'sb ls' and remove them with 'sb rm'",
+			"count", n)
+	}
+	all, _, _ := s.merge(s.routes, nil)
+	if err := opts.Proxy.SetRoutes(all); err != nil {
 		return nil, fmt.Errorf("api: load routes: %w", err)
 	}
-	s.health.track(ports(s.routes))
+	s.health.track(ports(all))
 	s.announce()
 	return s, nil
 }
@@ -287,12 +297,35 @@ func ports(routes []config.Route) []int {
 
 // checkReserved rejects routes for names Switchboard itself serves.
 func (s *Service) checkReserved(r config.Route) error {
-	for _, c := range claims(r) {
-		if slices.Contains(s.opts.Reserved, c) {
-			return fmt.Errorf("%w: %s is reserved for the Switchboard dashboard", ErrInvalid, c)
-		}
+	if root := s.reservedBy(r.Name); root != "" {
+		return fmt.Errorf("%w: %s is reserved: %s and every name under it belong to the Switchboard dashboard; pick another name",
+			ErrInvalid, r.Name, root)
 	}
 	return nil
+}
+
+// reservedBy returns the reserved name that name (or the base of a "*.name"
+// wildcard) is, or is under; "" if none. The dashboard owns its whole subtree
+// so that no route can serve a page next to it.
+func (s *Service) reservedBy(name string) string {
+	base := strings.TrimPrefix(strings.ToLower(name), "*.")
+	for _, n := range s.opts.Reserved {
+		if base == n || under(base, n) {
+			return n
+		}
+	}
+	return ""
+}
+
+// countReserved counts the routes with reserved names.
+func (s *Service) countReserved(routes []config.Route) int {
+	n := 0
+	for _, r := range routes {
+		if s.reservedBy(r.Name) != "" {
+			n++
+		}
+	}
+	return n
 }
 
 // Logs returns the recent requests to the route called name (qualified with

@@ -5,8 +5,12 @@ sb dashboard          # opens https://switchboard.test in your browser
 sb dashboard --print  # prints the sign-in link instead, e.g. to open it elsewhere
 ```
 
-The daemon serves the dashboard itself at `https://switchboard.<tld>`. That name is
-reserved: `sb add`, `sb apply` and Docker can't take it. What it shows:
+The daemon serves the dashboard itself at `https://switchboard.<tld>`. That name and
+every name under it (`api.switchboard.<tld>`, `*.switchboard.<tld>`) are reserved:
+`sb add`, `sb apply` and Docker can't take them, and a broad wildcard route such as
+`*.test` doesn't serve them either. Such routes saved by an older version stay in
+`routes.toml` but are not served; the daemon logs a warning, and you can remove them
+with `sb rm`. What it shows:
 
 - **Routes:** each route's status (up, down, not checked yet), its name as a link, its
   port and where it comes from (`sb add`, a `switchboard.toml`, or a Docker container).
@@ -50,8 +54,10 @@ The dashboard can change routes, so only you can open it:
    for a **one-time sign-in token**. It works once, within two minutes, and is only
    ever handed out on that socket.
 2. It opens `https://switchboard.<tld>/login?token=…`. The daemon exchanges the token
-   for a session cookie: random, new each time the daemon starts,
-   `HttpOnly; Secure; SameSite=Strict`. It then redirects to `/`, so the token doesn't
+   for a session cookie, `__Host-sb_session`: random, new each time the daemon starts,
+   `HttpOnly; Secure; SameSite=Strict; Path=/`, with no `Domain`. The `__Host-` prefix
+   means browsers only accept it from the dashboard itself, so a page on another
+   `.test` name can't plant or overwrite it. It then redirects to `/`, so the token doesn't
    stay in the address bar. Every other request without the cookie gets a
    "run `sb dashboard`" page.
 3. The dashboard is only served over HTTPS. Plain HTTP only redirects.

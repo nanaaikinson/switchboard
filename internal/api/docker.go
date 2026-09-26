@@ -28,7 +28,7 @@ func (s *Service) SetDocker(st DockerStatus, routes []DockerRoute) {
 			conflicts = append(conflicts, DockerSkip{Container: r.Container, Reason: err.Error()})
 		}
 		routes, active = nil, nil
-		all = s.routes
+		all, _, _ = s.merge(s.routes, nil)
 		if err := s.opts.Proxy.SetRoutes(all); err != nil {
 			slog.Error("restore config routes", "err", err)
 		}
@@ -42,24 +42,27 @@ func (s *Service) SetDocker(st DockerStatus, routes []DockerRoute) {
 
 // merge returns the config routes plus the Docker routes that don't claim a
 // reserved name, or a name or wildcard a config route (or an earlier Docker
-// route) already has.
+// route) already has. Config routes with reserved names are left out.
 func (s *Service) merge(cfg []config.Route, docker []DockerRoute) (all []config.Route, active []DockerRoute, conflicts []DockerSkip) {
 	used := map[string]string{}
-	for _, n := range s.opts.Reserved {
-		used[n] = "the Switchboard dashboard"
-	}
 	for _, r := range cfg {
+		if s.reservedBy(r.Name) != "" {
+			continue // kept in routes.toml from an older version, never served
+		}
+		all = append(all, r)
 		for _, c := range claims(r) {
 			used[c] = "a route in routes.toml"
 		}
 	}
-	all = slices.Clone(cfg)
 	for _, d := range docker {
 		var owner string
 		for _, c := range claims(d.Route) {
 			if used[c] != "" {
 				owner = used[c]
 			}
+		}
+		if s.reservedBy(d.Name) != "" {
+			owner = "the Switchboard dashboard"
 		}
 		if owner != "" {
 			conflicts = append(conflicts, DockerSkip{Container: d.Container, Reason: fmt.Sprintf("%s is taken by %s", d.Name, owner)})
