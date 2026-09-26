@@ -1,5 +1,5 @@
-# GoReleaser config: archives, SHA256SUMS, .deb/.rpm packages (nfpm) and the
-# Homebrew cask.
+# GoReleaser config: archives, SHA256SUMS, .deb/.rpm packages (nfpm), the
+# Homebrew cask and the Scoop manifest.
 # Used by .github/workflows/release.yml and `make dist`. Archive names and the
 # SHA256SUMS file are what install/install.sh and install.ps1 download; keep them in sync.
 version: 2
@@ -101,6 +101,29 @@ homebrew_casks:
             system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/sb"]
           end
           {{- end }}
+
+# `scoop bucket add switchboard https://github.com/nanaaikinson/scoop-bucket`,
+# then `scoop install switchboard`: the portable sb.exe from the zip. Not
+# published for pre-releases, or while SCOOP_BUCKET_TOKEN is unset. winget is
+# submitted from the release workflow's windows job instead (wingetcreate).
+scoops:
+  - name: switchboard
+    ids: [sb]
+    homepage: https://github.com/nanaaikinson/switchboard
+    description: Map local ports to trusted HTTPS names
+    license: Proprietary # until the repository has a LICENSE
+    directory: bucket
+    repository:
+      owner: nanaaikinson
+      name: scoop-bucket
+      token: '{{ index .Env "SCOOP_BUCKET_TOKEN" }}'
+    commit_author:
+      name: github-actions[bot]
+      email: 41898282+github-actions[bot]@users.noreply.github.com
+    commit_msg_template: "switchboard {{ .Tag }}"
+    skip_upload: '{{ if index .Env "SCOOP_BUCKET_TOKEN" }}auto{{ else }}true{{ end }}'
+    post_install:
+      - Write-Host "Run 'sb setup' once to set up .test names and trusted HTTPS."
 
 # Release notes, grouped by conventional-commit type. autotag.yml picks the
 # version from the same commit types.

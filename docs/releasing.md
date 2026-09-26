@@ -47,6 +47,10 @@ The release workflow:
    installs the prebuilt binary on macOS and Linux. If the release was built without
    the macOS signing secrets, the cask removes the download's quarantine flag after
    Homebrew has checked its SHA-256, since Gatekeeper would block the unsigned binary.
+   It also pushes the Scoop manifest `switchboard` to
+   [nanaaikinson/scoop-bucket](https://github.com/nanaaikinson/scoop-bucket), the
+   portable `sb.exe` from the Windows zips. Skipped for pre-releases and while
+   `SCOOP_BUCKET_TOKEN` is unset.
 4. Signs `SHA256SUMS` with the release key, as `SHA256SUMS.minisig`. Skipped while
    `MINISIGN_SECRET_KEY` is unset.
 5. Publishes signed build provenance for every archive and package (GitHub artifact
@@ -56,7 +60,9 @@ The release workflow:
    `.exe` and `.msi`), and uploads them to the same release. They're signed when the
    signing secrets below are set, and unsigned otherwise. For a stable release with a
    notarized `.dmg`, the macOS job also pushes the `switchboard` cask (the app) to the
-   tap: `brew install --cask nanaaikinson/tap/switchboard`.
+   tap: `brew install --cask nanaaikinson/tap/switchboard`. The Windows job checks the
+   installers' signatures with `signtool` before uploading them (when signed), then
+   opens a winget PR for `sb` (see [below](#scoop-and-winget)).
 7. Signs each `sb` archive with the release key, and publishes the update manifests
    that `sb self-update` and the tray app read (see [updates.md](updates.md)). This is
    skipped until the key and deploy token are configured.
@@ -71,7 +77,7 @@ makes these. A pre-release:
 
 - is marked as a pre-release on GitHub, so "latest" still points at the last stable
   release, and `install.sh` only installs it when asked with `SB_VERSION`;
-- doesn't update the Homebrew cask;
+- doesn't update the Homebrew casks, the Scoop bucket or winget;
 - goes to the `beta` update channel only (see [updates.md](updates.md)).
 
 ## Secrets and variables
@@ -91,14 +97,17 @@ works without any of them.
 | `TAURI_UPDATER_PUBKEY` | variable | The tray app updater's public key. | [updates.md](updates.md) |
 | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD` | secrets | The Developer ID Application certificate, for signing `sb` and the tray app. | [below](#macos-signing-and-notarization) |
 | `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID`, `APPLE_API_PRIVATE_KEY` | secrets | The App Store Connect API key, for notarizing. | [below](#macos-signing-and-notarization) |
-| `WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD` | secrets | Signing the Windows installers. | [tray.md](tray.md) |
+| `WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD` | secrets | Signing the Windows tray app and installers. Not set up yet. | [below](#windows-signing) |
+| `SCOOP_BUCKET_TOKEN` | secret | Pushing the Scoop manifest. A fine-grained token with *Contents: read and write* on `nanaaikinson/scoop-bucket` only. | [below](#scoop-and-winget) |
+| `WINGET_TOKEN` | secret | Opening the winget PR. A classic token with the `public_repo` scope. | [below](#scoop-and-winget) |
 
 `GITHUB_TOKEN` is provided by Actions; nothing to set.
 
 **Setting up the tap:** create a public repository `nanaaikinson/homebrew-tap` with a
 README, make the token above, and add it as `HOMEBREW_TAP_TOKEN`. The next stable release
-writes `Casks/sb.rb`, and `Casks/switchboard.rb` once macOS signing is set up too. While `switchboard` itself is private, `brew install` can't
-download the release assets, so the cask only works once it's public.
+writes `Casks/sb.rb`, and `Casks/switchboard.rb` once macOS signing is set up too.
+While `switchboard` itself is private, `brew install` can't download the release assets,
+so the casks only work once it's public.
 
 ## macOS signing and notarization
 
@@ -181,6 +190,73 @@ xcrun notarytool history --key AuthKey_KEYID.p8 --key-id KEYID --issuer ISSUER_I
 Revoke the key in the same place if it leaks, and the certificate at
 developer.apple.com (revoking a Developer ID certificate also invalidates everything it
 signed, so contact Apple first unless the key is compromised).
+
+## Windows signing
+
+Windows releases are **unsigned for now**. Windows SmartScreen warns about the tray
+installers ("Windows protected your PC" → *More info* → *Run anyway*). Scoop ignores
+Authenticode, and winget accepts unsigned portable packages.
+
+What's in place for when a certificate exists:
+
+- `tauri build` calls [sign-windows.ps1](../app/tray/src-tauri/scripts/sign-windows.ps1)
+  for the app, its `sb` sidecar and both installers. It signs with `signtool`, SHA-256
+  and an RFC 3161 timestamp (`WINDOWS_TIMESTAMP_URL`, default DigiCert's), from a
+  `.pfx` in `WINDOWS_CERTIFICATE` (base64) and `WINDOWS_CERTIFICATE_PASSWORD`.
+- Once `WINDOWS_CERTIFICATE` is set, the Windows job runs `signtool verify /pa` on the
+  app, the sidecar and each installer before uploading. It fails if any of them isn't
+  signed, doesn't chain to a trusted root, or has no timestamp.
+
+A `.pfx` fits a CA certificate you hold yourself. For a cloud-signing service, where
+the key never leaves the provider, `sign-windows.ps1` gets a second branch for that
+provider's tool. The standalone `sb.exe` in the release zips isn't signed yet either
+way: GoReleaser builds it on the macOS runner, where `signtool` doesn't run.
+
+## Scoop and winget
+
+Both install the portable `sb.exe` from the release zips, and both are skipped for
+pre-releases.
+
+**Scoop.** GoReleaser writes `bucket/switchboard.json` to
+[nanaaikinson/scoop-bucket](https://github.com/nanaaikinson/scoop-bucket). Users run:
+
+```powershell
+scoop bucket add switchboard https://github.com/nanaaikinson/scoop-bucket
+scoop install switchboard
+```
+
+To set it up, create the public repository `nanaaikinson/scoop-bucket` with a README
+and an empty `bucket/` directory (a `.gitkeep` inside). Then make a fine-grained token
+with *Contents: read and write* on that repository only, and add it as
+`SCOOP_BUCKET_TOKEN`. One token covering both the tap and the bucket works too, if you
+set it as both secrets.
+
+**winget.** [winget-manifests.sh](../.github/scripts/winget-manifests.sh) writes the
+three manifests for `Switchboard.Switchboard` (a `zip` with a `portable` `sb.exe`,
+aliased as `sb`, for x64 and arm64), with hashes from `SHA256SUMS`. The Windows job
+checks that `wingetcreate.exe` is signed by Microsoft, then runs `wingetcreate submit`.
+That forks [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) into the
+token owner's account and opens a PR. winget's validation downloads the zips, so the
+step is skipped while this repository is private.
+
+The manifests are written in full every release, instead of with `wingetcreate update`:
+the path inside each zip (`sb_<version>_windows_amd64\sb.exe`) changes with every
+version, and `update` would keep the old one.
+
+To set it up:
+
+1. On GitHub, open *Settings → Developer settings → Personal access tokens → Tokens
+   (classic)*, and generate one with only the **`public_repo`** scope. wingetcreate
+   needs a classic token to fork and open a PR on a repository you don't own. Give it
+   an expiry and a note like `winget submissions`.
+2. Add it as `WINGET_TOKEN`.
+3. The first PR adds a new package, so a winget-pkgs moderator reviews it by hand.
+   Watch it for review comments. Later versions usually merge automatically once
+   validation passes.
+
+The manifests say `License: Proprietary`, since the repository has no LICENSE yet.
+Change it in winget-manifests.sh and `.goreleaser.yaml` (the Scoop entry) when one is
+added.
 
 ## Linux packages and systemd
 

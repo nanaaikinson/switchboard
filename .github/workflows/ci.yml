@@ -83,8 +83,10 @@ jobs:
           shellcheck --version
           shellcheck --shell=sh --severity=style install/install.sh install/packaging/*.sh test/e2e/linux/*.sh .github/scripts/*.sh test/release/*.sh app/tray/scripts/*.sh
 
-      - name: Test the release version script
-        run: sh test/release/next-version-test.sh
+      - name: Test the release scripts
+        run: |
+          sh test/release/next-version-test.sh
+          sh test/release/winget-manifests-test.sh
 
   dashboard:
     name: dashboard

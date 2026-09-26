@@ -71,8 +71,8 @@ jobs:
 
       # Builds the archives, SHA256SUMS and .deb/.rpm packages from
       # .goreleaser.yaml, publishes the GitHub release, and pushes the
-      # Homebrew cask. Tags with a pre-release part (v0.2.0-beta.1) are
-      # marked as pre-releases and don't update the cask.
+      # Homebrew cask and the Scoop manifest. Tags with a pre-release part
+      # (v0.2.0-beta.1) are marked as pre-releases and update neither.
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -85,6 +85,8 @@ jobs:
           SB_UPDATE_PUBLIC_KEY: ${{ vars.SB_UPDATE_PUBLIC_KEY }}
           # Push access to nanaaikinson/homebrew-tap; unset skips the cask.
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          # Push access to nanaaikinson/scoop-bucket; unset skips Scoop.
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
 
       # SHA256SUMS.minisig: one signature over every archive's checksum,
       # made with the release key (docs/updates.md). Skipped until it is set.
@@ -282,8 +284,10 @@ jobs:
         working-directory: .
         run: sh .github/scripts/macos-sign.sh cleanup
 
-  # The tray app for Windows: NSIS + MSI installers, signed when the Windows
-  # signing secrets are set.
+  # The tray app for Windows: NSIS + MSI installers, signed (with a timestamp)
+  # when the Windows signing secrets are set and checked with signtool before
+  # upload. Then the winget PR for sb. Unsigned while the secrets are unset;
+  # see docs/releasing.md.
   windows:
     needs: release
     if: ${{ always() && needs.release.result == 'success' }}
@@ -293,6 +297,9 @@ jobs:
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
       BUNDLE: src-tauri/target/x86_64-pc-windows-msvc/release/bundle
+      SIGNED: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+      # winget's validation downloads the zips, so a private repo can't submit.
+      WINGET: ${{ secrets.WINGET_TOKEN != '' && !contains(inputs.tag || github.ref_name, '-') && !github.event.repository.private }}
     defaults:
       run:
         shell: bash
@@ -334,6 +341,28 @@ jobs:
           fi
           npx tauri build --target x86_64-pc-windows-msvc --bundles nsis,msi --config "$config"
 
+      # Everything sign-windows.ps1 signed: a valid Authenticode signature
+      # that chains to a trusted root, with a timestamp so it outlives the
+      # certificate.
+      - name: Verify signatures
+        shell: pwsh
+        run: |
+          if ($env:SIGNED -ne 'true') {
+            Write-Host "::notice::WINDOWS_CERTIFICATE is not set; the Windows installers are unsigned."
+            exit 0
+          }
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe not found; install the Windows SDK" }
+          $release = "src-tauri/target/x86_64-pc-windows-msvc/release"
+          $files = @("$release/switchboard-tray.exe", "$release/sb.exe") +
+            (Get-ChildItem "$env:BUNDLE/nsis/*.exe", "$env:BUNDLE/msi/*.msi").FullName
+          foreach ($f in $files) {
+            $out = & $signtool.FullName verify /pa /v $f 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) { Write-Host $out; throw "$f has no valid signature" }
+            if ($out -notmatch 'The signature is timestamped') { Write-Host $out; throw "$f is signed but not timestamped" }
+            Write-Host "verified: $f"
+          }
+
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -343,6 +372,36 @@ jobs:
           shopt -s nullglob
           files=(nsis/*.exe nsis/*.exe.sig msi/*.msi)
           gh release upload "$TAG" "${files[@]}" --clobber
+
+      # `winget install Switchboard.Switchboard`: a PR to microsoft/winget-pkgs
+      # with the portable sb.exe from the release zips. Stable releases of a
+      # public repository only, while WINGET_TOKEN is set.
+      - name: Write the winget manifests
+        if: env.WINGET == 'true'
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" -p SHA256SUMS -D winget-sums --clobber
+          sh .github/scripts/winget-manifests.sh "$TAG" "${{ github.repository }}" winget-sums/SHA256SUMS winget-manifests
+          cat winget-manifests/*
+
+      - name: Submit to winget
+        if: env.WINGET == 'true'
+        working-directory: .
+        shell: pwsh
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP wingetcreate.exe
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile $exe -UseBasicParsing
+          $sig = Get-AuthenticodeSignature $exe
+          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+            throw "wingetcreate.exe isn't signed by Microsoft ($($sig.Status)); not running it"
+          }
+          $version = $env:TAG.TrimStart('v')
+          & $exe submit --token $env:WINGET_TOKEN --prtitle "New version: Switchboard.Switchboard version $version" winget-manifests
+          if ($LASTEXITCODE -ne 0) { throw "wingetcreate submit failed with exit code $LASTEXITCODE" }
 
   # Signs the sb archives, builds the update manifests (checking every
   # signature), and publishes them to the switchboard-updates GitHub Pages

@@ -39,6 +39,7 @@ test-ui:
 lint-sh:
 	shellcheck --shell=sh --severity=style install/install.sh install/packaging/*.sh test/e2e/linux/*.sh .github/scripts/*.sh test/release/*.sh app/tray/scripts/*.sh
 	sh test/release/next-version-test.sh >/dev/null
+	sh test/release/winget-manifests-test.sh >/dev/null
 
 vuln:
 	govulncheck ./...

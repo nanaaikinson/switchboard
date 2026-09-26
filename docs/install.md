@@ -80,7 +80,22 @@ undo a per-user setup.
 
 ## Windows
 
-In PowerShell (Windows PowerShell 5.1 or pwsh 7), as your normal user:
+With [Scoop](https://scoop.sh) or winget:
+
+```powershell
+scoop bucket add switchboard https://github.com/nanaaikinson/scoop-bucket
+scoop install switchboard
+```
+
+```powershell
+winget install Switchboard.Switchboard
+```
+
+Both install the portable `sb.exe` from the latest stable release, and update with
+`scoop update switchboard` or `winget upgrade Switchboard.Switchboard`.
+
+Or with the install script, in PowerShell (Windows PowerShell 5.1 or pwsh 7), as your
+normal user:
 
 ```powershell
 irm https://raw.githubusercontent.com/nanaaikinson/switchboard/main/install/install.ps1 | iex
