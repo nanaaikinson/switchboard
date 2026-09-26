@@ -83,7 +83,8 @@ Publisher: Nana Kwesi Ofosu-Aikins
 PublisherUrl: https://github.com/${repo%%/*}
 PackageName: Switchboard
 PackageUrl: https://github.com/$repo
-License: Proprietary
+License: MIT
+LicenseUrl: https://github.com/$repo/blob/HEAD/LICENSE
 ShortDescription: Map local ports to trusted HTTPS names
 Description: Switchboard routes names such as https://myapp.test to apps on local ports, with a local DNS server, a reverse proxy and a name-constrained local CA. Run 'sb setup' once after installing, and 'sb uninstall' before uninstalling to undo its system changes.
 Moniker: switchboard

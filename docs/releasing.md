@@ -56,13 +56,13 @@ The release workflow:
 5. Publishes signed build provenance for every archive and package (GitHub artifact
    attestations). This step is skipped while the repository is private, because GitHub
    does not offer attestations for user-owned private repositories.
-6. Then builds the [tray app](tray.md) on macOS (a universal `.dmg`) and Windows (NSIS
-   `.exe` and `.msi`), and uploads them to the same release. They're signed when the
-   signing secrets below are set, and unsigned otherwise. For a stable release with a
-   notarized `.dmg`, the macOS job also pushes the `switchboard` cask (the app) to the
-   tap: `brew install --cask nanaaikinson/tap/switchboard`. The Windows job checks the
-   installers' signatures with `signtool` before uploading them (when signed), then
-   opens a winget PR for `sb` (see [below](#scoop-and-winget)).
+6. Then builds the [tray app](tray.md) on macOS (a universal `.dmg`) and uploads it to
+   the same release. It's signed when the signing secrets below are set, and unsigned
+   otherwise. For a stable release with a notarized `.dmg`, the macOS job also pushes
+   the `switchboard` cask (the app) to the tap:
+   `brew install --cask nanaaikinson/tap/switchboard`. There is no Windows tray app for
+   now: it can't talk to the daemon yet, so its installers aren't built. The Windows job
+   only opens the winget PR for `sb` (see [below](#scoop-and-winget)).
 7. Signs each `sb` archive with the release key, and publishes the update manifests
    that `sb self-update` and the tray app read (see [updates.md](updates.md)). The
    archives are downloaded from the release again for this, so they're signed only if
@@ -196,12 +196,12 @@ signed, so contact Apple first unless the key is compromised).
 
 ## Windows signing
 
-Windows releases are **unsigned for now**. Windows SmartScreen warns about the tray
-installers ("Windows protected your PC" → *More info* → *Run anyway*). Scoop ignores
-Authenticode, and winget accepts unsigned portable packages. The postponed work is in
+Windows releases are **unsigned for now**, and only ship the `sb` command (the tray app
+isn't built for Windows yet). Scoop ignores Authenticode, and winget accepts unsigned
+portable packages. The postponed work is in
 [backlog.md](backlog.md).
 
-What's in place for when a certificate exists:
+What's in place for when a certificate exists and the Windows tray app is built again:
 
 - `tauri build` calls [sign-windows.ps1](../app/tray/src-tauri/scripts/sign-windows.ps1)
   for the app, its `sb` sidecar and both installers. It signs with `signtool`, SHA-256
@@ -258,9 +258,8 @@ To set it up:
    Watch it for review comments. Later versions usually merge automatically once
    validation passes.
 
-The manifests say `License: Proprietary`, since the repository has no LICENSE yet.
-Change it in winget-manifests.sh and `.goreleaser.yaml` (the Scoop entry) when one is
-added.
+The winget, Scoop and `.deb`/`.rpm` metadata give the license as MIT, matching
+[LICENSE](../LICENSE).
 
 ## Linux packages and systemd
 

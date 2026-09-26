@@ -117,8 +117,8 @@ exist even when they work. Use `Resolve-DnsName` or `ping`.
 
 ## Not yet on Windows
 
-- **The tray app** ([tray.md](tray.md)) builds for Windows, but can't talk to the
-  daemon yet: it has no named-pipe client, and its setup wizard and **Install
+- **The tray app** ([tray.md](tray.md)) isn't released for Windows: it can't talk to the
+  daemon there yet (no named-pipe client), and its setup wizard and **Install
   Command-Line Tool…** are macOS-only. Use `sb` from a terminal.
 - **`.local` mode** works with the built-in mDNS responder only, and `sb doctor`
   can't yet check where `.local` lookups go (it reports `SKIP`). See [mdns.md](mdns.md).

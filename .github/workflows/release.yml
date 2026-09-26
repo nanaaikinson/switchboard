@@ -298,116 +298,32 @@ jobs:
         working-directory: .
         run: sh .github/scripts/macos-sign.sh cleanup
 
-  # The tray app for Windows: NSIS + MSI installers, signed (with a timestamp)
-  # when the Windows signing secrets are set and checked with signtool before
-  # upload. Then the winget PR for sb. Unsigned while the secrets are unset;
-  # see docs/releasing.md.
+  # winget: a PR to microsoft/winget-pkgs with the portable sb.exe from the
+  # release zips. There is no Windows tray app for now (docs/tray.md): its
+  # installers aren't built.
   windows:
     needs: release
     if: ${{ always() && needs.release.result == 'success' }}
     runs-on: windows-latest
     permissions:
-      contents: write # upload release assets
+      contents: read
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
-      BUNDLE: src-tauri/target/x86_64-pc-windows-msvc/release/bundle
-      SIGNED: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
       # winget's validation downloads the zips, so a private repo can't submit.
       WINGET: ${{ secrets.WINGET_TOKEN != '' && !contains(inputs.tag || github.ref_name, '-') && !github.event.repository.private }}
     defaults:
       run:
         shell: bash
-        working-directory: app/tray
     steps:
       - uses: actions/checkout@v7
+        if: env.WINGET == 'true'
         with:
           ref: ${{ inputs.tag || github.ref }}
-          fetch-depth: 0 # the sidecar's version comes from git describe
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-
-      # A step of its own, so npm install scripts never see the signing keys.
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build the tray app
-        env:
-          # Windows signing (src-tauri/scripts/sign-windows.ps1).
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          # In-app updates: the release key (see docs/updates.md).
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
-        run: |
-          version=${TAG#v}
-          # The app version is the release version (MSI needs a plain X.Y.Z).
-          config="{\"version\": \"${version%%-*}\"}"
-          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && [ -n "$UPDATER_PUBKEY" ]; then
-            config="{\"version\": \"${version%%-*}\", \"bundle\": {\"createUpdaterArtifacts\": true}, \"plugins\": {\"updater\": {\"pubkey\": \"$UPDATER_PUBKEY\"}}}"
-          fi
-          npx tauri build --target x86_64-pc-windows-msvc --bundles nsis,msi --config "$config"
-
-      # Everything sign-windows.ps1 signed: a valid Authenticode signature
-      # that chains to a trusted root, with a timestamp so it outlives the
-      # certificate.
-      - name: Verify signatures
-        shell: pwsh
-        run: |
-          if ($env:SIGNED -ne 'true') {
-            Write-Host "::notice::WINDOWS_CERTIFICATE is not set; the Windows installers are unsigned."
-            exit 0
-          }
-          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
-          if (-not $signtool) { throw "signtool.exe not found; install the Windows SDK" }
-          $release = "src-tauri/target/x86_64-pc-windows-msvc/release"
-          $files = @("$release/switchboard-tray.exe", "$release/sb.exe") +
-            (Get-ChildItem "$env:BUNDLE/nsis/*.exe", "$env:BUNDLE/msi/*.msi").FullName
-          foreach ($f in $files) {
-            $out = & $signtool.FullName verify /pa /v $f 2>&1 | Out-String
-            if ($LASTEXITCODE -ne 0) { Write-Host $out; throw "$f has no valid signature" }
-            if ($out -notmatch 'The signature is timestamped') { Write-Host $out; throw "$f is signed but not timestamped" }
-            Write-Host "verified: $f"
-          }
-
-      - name: Upload to the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        # Updater bundles and .sig files exist only when the signing key is set.
-        run: |
-          cd "$BUNDLE"
-          shopt -s nullglob
-          files=(nsis/*.exe nsis/*.exe.sig msi/*.msi)
-          gh release upload "$TAG" "${files[@]}" --clobber
-          # Checksums of the updater files, for publish-updates (see macOS).
-          updater=(nsis/*-setup.exe nsis/*-setup.exe.sig)
-          mkdir -p "$RUNNER_TEMP/tray-sums"
-          if [ ${#updater[@]} -gt 0 ]; then
-            for f in "${updater[@]}"; do printf '%s  %s\n' "$(sha256sum < "$f" | cut -d' ' -f1)" "$(basename "$f")"; done > "$RUNNER_TEMP/tray-sums/windows.sha256"
-          fi
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tray-sums-windows
-          path: ${{ runner.temp }}/tray-sums
-          if-no-files-found: ignore
-
-      # `winget install Switchboard.Switchboard`: a PR to microsoft/winget-pkgs
-      # with the portable sb.exe from the release zips. Stable releases of a
-      # public repository only, while WINGET_TOKEN is set.
+      # `winget install Switchboard.Switchboard`. Stable releases of a public
+      # repository only, while WINGET_TOKEN is set.
       - name: Write the winget manifests
         if: env.WINGET == 'true'
-        working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -417,7 +333,6 @@ jobs:
 
       - name: Submit to winget
         if: env.WINGET == 'true'
-        working-directory: .
         shell: pwsh
         env:
           WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
@@ -507,7 +422,7 @@ jobs:
           go run ./cmd/sb-manifest -version "$TAG" -base-url "$base" -rollout "$ROLLOUT" -notes-file notes.md \
             dist/sb_*.tar.gz dist/sb_*.zip > sb.json
           mkdir -p tray
-          gh release download "$TAG" -D tray -p '*.app.tar.gz' -p '*.app.tar.gz.sig' -p '*-setup.exe' -p '*-setup.exe.sig' || true
+          gh release download "$TAG" -D tray -p '*.app.tar.gz' -p '*.app.tar.gz.sig' || true
           if ls tray/*.sig > /dev/null 2>&1; then
             # Sign a manifest only for the exact bundles the tray jobs built,
             # so a replaced asset (an older, validly signed bundle and .sig)
@@ -520,7 +435,7 @@ jobs:
             (cd tray && sha256sum -c ../tray.sha256) ||
               { echo "::error::a tray updater file in the release differs from what the tray jobs built"; exit 1; }
             go run ./cmd/sb-manifest -tray -version "$TAG" -base-url "$base" -rollout "$ROLLOUT" -notes-file notes.md \
-              tray/*.app.tar.gz tray/*-setup.exe > tray.json
+              tray/*.app.tar.gz > tray.json
           fi
 
       - name: Publish to switchboard-updates

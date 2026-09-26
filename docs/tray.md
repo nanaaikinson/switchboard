@@ -66,8 +66,10 @@ before every `tauri build`, including universal macOS builds, which it merges wi
 
 Bundles are set per platform: `tauri.macos.conf.json` builds `.app` and `.dmg`, and
 `tauri.windows.conf.json` builds NSIS (`.exe`) and MSI installers. The release
-workflow builds a universal `.dmg` and the Windows installers for each tag and attaches
-them to the GitHub release. See [releasing.md](releasing.md).
+workflow builds a universal `.dmg` for each tag and attaches it to the GitHub release
+([releasing.md](releasing.md)). **There is no Windows release for now:** the app builds
+for Windows (CI checks it), but it can't talk to the daemon there yet: it has no
+named-pipe client, and the setup wizard is macOS-only.
 
 ### Signing
 
