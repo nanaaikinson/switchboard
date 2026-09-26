@@ -14,6 +14,7 @@ import (
 
 	"github.com/smallstep/truststore"
 
+	"github.com/nanaaikinson/switchboard/internal/dns"
 	"github.com/nanaaikinson/switchboard/internal/platform/posix"
 )
 
@@ -43,13 +44,14 @@ type Options struct {
 	Home   string
 	SbPath string
 
-	Root         string                                            // prefix for every system path; "" is /
-	Run          func(name string, args ...string) ([]byte, error) // nil runs the command
-	Chown        func(f *os.File, uid, gid int) error              // nil is (*os.File).Chown
-	HelperSocket string                                            // "" is DefaultHelperSocket
-	HelperAddrs  []string                                          // "" is ports 80 and 443 on 127.0.0.1 and [::1]
-	Trust        func(*x509.Certificate) error                     // nil is truststore.Install (System keychain)
-	NSS          func() (NSSStore, error)                          // nil is truststore.NewNSSTrust
+	Root          string                                            // prefix for every system path; "" is /
+	Run           func(name string, args ...string) ([]byte, error) // nil runs the command
+	Chown         func(f *os.File, uid, gid int) error              // nil is (*os.File).Chown
+	HelperSocket  string                                            // "" is DefaultHelperSocket
+	HelperAddrs   []string                                          // "" is ports 80 and 443 on 127.0.0.1 and [::1]
+	HelperDNSAddr string                                            // "" is dns.ResolverAddr
+	Trust         func(*x509.Certificate) error                     // nil is truststore.Install (System keychain)
+	NSS           func() (NSSStore, error)                          // nil is truststore.NewNSSTrust
 }
 
 // Platform implements platform.Platform for macOS.
@@ -73,6 +75,9 @@ func New(o Options) *Platform {
 	}
 	if o.HelperSocket == "" {
 		o.HelperSocket = DefaultHelperSocket
+	}
+	if o.HelperDNSAddr == "" {
+		o.HelperDNSAddr = dns.ResolverAddr
 	}
 	if len(o.HelperAddrs) == 0 {
 		o.HelperAddrs = []string{"127.0.0.1:80", "[::1]:80", "127.0.0.1:443", "[::1]:443"}
@@ -115,7 +120,7 @@ func (p *Platform) InstallPlan(tld string, dnsPort int) []string {
 	return []string{
 		fmt.Sprintf("Write %s so .%s names resolve via 127.0.0.1 port %d", resolverPath(tld), tld, dnsPort),
 		fmt.Sprintf("Copy %s to %s (owned by root, mode 0755)", p.o.SbPath, helperBinPath),
-		fmt.Sprintf("Write %s and load it: runs the helper as root at boot; it only binds ports 80 and 443 on 127.0.0.1 and [::1] and passes them to your daemon", helperPlistPath),
+		fmt.Sprintf("Write %s and load it: runs the helper as root at boot; it only binds ports 80 and 443 on 127.0.0.1 and [::1], and DNS on %s, and passes them to your daemon", helperPlistPath, p.o.HelperDNSAddr),
 		fmt.Sprintf("Write %s and load it: runs 'sb daemon' as you at login", p.agentPlist()),
 	}
 }

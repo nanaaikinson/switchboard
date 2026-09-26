@@ -137,8 +137,9 @@ rather than slowing down route changes, so reload `GET /v1/status` after reconne
 ## Daemon startup
 
 `sb daemon` loads `routes.toml`, then claims the socket, then starts the DNS server
-(`--dns-addr`, default `127.0.0.1:15353`, or `127.0.0.1:53` on Windows, since NRPT
-rules can't name a port), the HTTPS proxy (`--https-addr`, default
+(on macOS and Linux, sockets on `127.0.0.1:535` from the helper; without it,
+`--dns-addr`, default `127.0.0.1:15353`; on Windows `127.0.0.1:53`, since NRPT rules
+can't name a port), the HTTPS proxy (`--https-addr`, default
 `127.0.0.1:443,[::1]:443`) and the HTTP proxy (`--http-addr`, default
 `127.0.0.1:80,[::1]:80`). `proxy` in the status is plain HTTP; `https` is HTTPS.
 

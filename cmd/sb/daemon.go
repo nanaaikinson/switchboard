@@ -36,6 +36,7 @@ type daemonOptions struct {
 	httpsAddrs     []string
 	healthInterval time.Duration
 	useHelper      bool // ask the privileged helper for the HTTP listeners first
+	useHelperDNS   bool // ask the privileged helper for the DNS sockets first
 	// dockerConnect discovers containers; nil disables Docker routes.
 	dockerConnect func(context.Context) (docker.Client, string, error)
 	ready         func() // called once the control socket is accepting; for tests
@@ -63,7 +64,10 @@ with redirect_https are redirected to HTTPS while HTTPS is up.
 
 Unless --http-addr or --https-addr is given, the daemon first asks the
 privileged helper installed by 'sb setup' for the port 80 and 443 listeners,
-and binds any it did not get itself.
+and binds any it did not get itself. Likewise, unless --dns-addr is given, it
+asks the helper for DNS sockets on the privileged port split DNS points at
+(macOS and Linux), so no other user can take that port first; without the
+helper it binds --dns-addr itself.
 
 With --docker (the default), running containers that publish a TCP port get
 routes too: <container>.<tld>, or <service>.<project>.<tld> for Compose. They
@@ -79,6 +83,7 @@ announced over multicast DNS on the loopback interface; see 'sb tld'.`,
 				opts.dockerConnect = docker.Connect
 			}
 			opts.useHelper = !cmd.Flags().Changed("http-addr") && !cmd.Flags().Changed("https-addr")
+			opts.useHelperDNS = !cmd.Flags().Changed("dns-addr")
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			return runDaemon(ctx, opts)
@@ -172,7 +177,7 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 		_ = ctl.Close()
 		return err
 	}
-	if err := d.Listen(); err != nil {
+	if err := listenDNS(ctx, d, opts); err != nil {
 		slog.Warn("dns server not listening", "err", err)
 		svc.SetDNS(api.Listener{Addrs: []string{opts.dnsAddr}, Error: err.Error()})
 	} else {
@@ -238,6 +243,22 @@ func runDaemon(ctx context.Context, opts daemonOptions) error {
 	wg.Wait()
 	slog.Info("daemon stopped")
 	return err
+}
+
+// listenDNS gets d its sockets: from the helper when allowed, else by
+// binding opts.dnsAddr.
+func listenDNS(ctx context.Context, d *dns.Server, opts daemonOptions) error {
+	if opts.useHelperDNS {
+		pc, ln, err := platform.Current().HelperDNS(ctx)
+		if err == nil {
+			slog.Info("dns sockets received from helper")
+			return d.Use(pc, ln)
+		}
+		if !errors.Is(err, errors.ErrUnsupported) {
+			slog.Info("helper has no DNS sockets; binding the DNS port directly", "err", err)
+		}
+	}
+	return d.Listen()
 }
 
 type listenerSet struct {

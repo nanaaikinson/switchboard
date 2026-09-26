@@ -23,7 +23,12 @@ func startHelper(t *testing.T, hosts func([]string) error, addrs ...string) *Ser
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	s := &Server{Socket: filepath.Join(dir, "run", "helper.sock"), UID: os.Getuid(), GID: os.Getgid(), Addrs: addrs, Hosts: hosts}
+	return serveHelper(t, &Server{Socket: filepath.Join(dir, "run", "helper.sock"), UID: os.Getuid(), GID: os.Getgid(), Addrs: addrs, Hosts: hosts})
+}
+
+// serveHelper runs s until the test ends.
+func serveHelper(t *testing.T, s *Server) *Server {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- s.Serve(ctx) }()
@@ -182,5 +187,59 @@ func TestHelperRejectsHugeRequest(t *testing.T) {
 	}
 	if !strings.Contains(resp.Error, "bad request") {
 		t.Errorf("resp = %+v, want bad request", resp)
+	}
+}
+
+// The helper binds the DNS port for the daemon, UDP and TCP, so no other user
+// can bind it first. A helper without DNSAddr answers like an earlier
+// version, and the daemon falls back to binding its own port.
+func TestHelperPassesDNSSockets(t *testing.T) {
+	dir, err := os.MkdirTemp("", "sbh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	s := serveHelper(t, &Server{Socket: filepath.Join(dir, "helper.sock"), UID: os.Getuid(), GID: os.Getgid(), DNSAddr: "127.0.0.1:0"})
+	pc, ln, err := DNSSockets(context.Background(), s.Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	defer ln.Close()
+	if _, ok := pc.(*net.UDPConn); !ok || !strings.HasPrefix(pc.LocalAddr().String(), "127.0.0.1:") {
+		t.Errorf("UDP socket %T %s", pc, pc.LocalAddr())
+	}
+	go func() {
+		buf := make([]byte, 16)
+		n, from, err := pc.ReadFrom(buf)
+		if err == nil {
+			_, _ = pc.WriteTo(buf[:n], from)
+		}
+	}()
+	c, err := net.Dial("udp", pc.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 4)
+	if _, err := c.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Read(buf); err != nil || string(buf) != "ping" {
+		t.Errorf("UDP echo over the received socket: %q, %v", buf, err)
+	}
+	if _, err := net.DialTimeout("tcp", ln.Addr().String(), 2*time.Second); err != nil {
+		t.Errorf("TCP socket: %v", err)
+	}
+
+	old := startHelper(t, nil, "127.0.0.1:0")
+	if _, _, err := DNSSockets(context.Background(), old.Socket); !errors.Is(err, ErrOldHelper) || !strings.Contains(err.Error(), "sb setup") {
+		t.Errorf("helper without DNS: %v", err)
+	}
+	for _, addr := range []string{"0.0.0.0:0", "10.0.0.1:53", "bad"} {
+		if _, err := bindDNS(addr); err == nil {
+			t.Errorf("bindDNS(%s) bound beyond loopback", addr)
+		}
 	}
 }

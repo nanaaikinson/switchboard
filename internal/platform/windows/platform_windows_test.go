@@ -181,9 +181,16 @@ func TestTrust(t *testing.T) {
 }
 
 func TestPortOwnerParsesListener(t *testing.T) {
-	p, _, _ := newTest(t, func(string) (string, error) { return "1234\tnginx", nil })
-	if got, err := p.PortOwner(context.Background(), 80); err != nil || got != "nginx (pid 1234)" {
-		t.Errorf("PortOwner = %q, %v", got, err)
+	for out, want := range map[string]string{
+		"1234\tnginx\tCONTOSO\\jane": "nginx (pid 1234)",
+		"1234\tnginx\tcontoso\\JANE": "nginx (pid 1234)",
+		"1234\tnginx\tCONTOSO\\bob":  "nginx (pid 1234, run by another account: CONTOSO\\bob)",
+		"1234\tdns\t":                "dns (pid 1234, run by another account: an account whose processes you can't see)",
+	} {
+		p, _, _ := newTest(t, func(string) (string, error) { return out, nil })
+		if got, err := p.PortOwner(context.Background(), 53); err != nil || got != want {
+			t.Errorf("PortOwner(%q) = %q, %v; want %q", out, got, err, want)
+		}
 	}
 	free, _, _ := newTest(t, ok)
 	if got, _ := free.PortOwner(context.Background(), 80); got != "" {

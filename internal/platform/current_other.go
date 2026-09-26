@@ -34,6 +34,9 @@ func (unsupported) ServeHelper(context.Context) error { return errUnsupported }
 func (unsupported) HelperListeners(context.Context) ([]net.Listener, error) {
 	return nil, errUnsupported
 }
+func (unsupported) HelperDNS(context.Context) (net.PacketConn, net.Listener, error) {
+	return nil, nil, errUnsupported
+}
 func (unsupported) TrustPlan(string) []string                 { return nil }
 func (unsupported) UntrustPlan(string) []string               { return nil }
 func (unsupported) TrustCA(string, string) error              { return errUnsupported }

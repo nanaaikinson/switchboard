@@ -28,6 +28,9 @@ type unsupportedError struct{}
 func (unsupportedError) Error() string        { return "not needed on Windows" }
 func (unsupportedError) Is(target error) bool { return target == errors.ErrUnsupported }
 
+// AnotherAccount marks a PortOwner held by a process of another account.
+const AnotherAccount = "run by another account"
+
 // ErrForeignRule means something Switchboard would manage exists and isn't
 // Switchboard's, so it is left alone.
 var ErrForeignRule = errors.New("not created by Switchboard")
@@ -291,6 +294,11 @@ func (p *Platform) HelperListeners(context.Context) ([]net.Listener, error) {
 	return nil, ErrUnsupported
 }
 
+// HelperDNS is unsupported, so the daemon binds its DNS port itself.
+func (p *Platform) HelperDNS(context.Context) (net.PacketConn, net.Listener, error) {
+	return nil, nil, ErrUnsupported
+}
+
 // SyncHosts is unsupported: NRPT covers every name, wildcards included.
 func (p *Platform) SyncHosts(context.Context, []string) error { return ErrUnsupported }
 
@@ -358,18 +366,34 @@ func (p *Platform) LookupHost(ctx context.Context, host string) ([]string, error
 	return addrs, err
 }
 
-// PortOwner names the process listening on TCP port. Port owned by PID 4
-// (System) belongs to http.sys, so it asks netsh which request queue has a
-// URL registered on the port, e.g. IIS's DefaultAppPool.
+// PortOwner names the process listening on TCP (else UDP) port, and says so
+// when it runs as another account: Windows has no privileged ports, so any
+// user can bind 53, 80 or 443 before the daemon and see or answer its
+// traffic. Port owned by PID 4 (System) belongs to http.sys, so it asks
+// netsh which request queue has a URL registered on the port, e.g. IIS's
+// DefaultAppPool.
 func (p *Platform) PortOwner(_ context.Context, port int) (string, error) {
 	out, err := p.ps("find the port's owner", listenerScript(port))
 	if err != nil || out == "" {
 		return "", err
 	}
-	pidStr, name, _ := strings.Cut(out, "\t")
-	pid, _ := strconv.Atoi(strings.TrimSpace(pidStr))
+	fields := strings.SplitN(out, "\t", 3)
+	pid, _ := strconv.Atoi(strings.TrimSpace(fields[0]))
+	var name, account string
+	if len(fields) > 1 {
+		name = strings.TrimSpace(fields[1])
+	}
+	if len(fields) > 2 {
+		account = strings.TrimSpace(fields[2])
+	}
 	if pid != 4 {
-		return fmt.Sprintf("%s (pid %d)", strings.TrimSpace(name), pid), nil
+		if p.o.User != "" && !strings.EqualFold(account, p.o.User) {
+			if account == "" {
+				account = "an account whose processes you can't see"
+			}
+			return fmt.Sprintf("%s (pid %d, %s: %s)", name, pid, AnotherAccount, account), nil
+		}
+		return fmt.Sprintf("%s (pid %d)", name, pid), nil
 	}
 	state, err := exec.Command("netsh", "http", "show", "servicestate", "view=requestq").Output()
 	if err != nil {

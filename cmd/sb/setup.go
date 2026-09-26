@@ -34,8 +34,9 @@ var runSudo = func(ctx context.Context, args []string, stdin io.Reader, stdout, 
 
 func defaultTLD() string { return dns.DefaultTLDs()[0] }
 
+// defaultDNSPort is where 'sb setup' points split DNS.
 func defaultDNSPort() int {
-	_, port, _ := net.SplitHostPort(dns.DefaultAddr)
+	_, port, _ := net.SplitHostPort(dns.ResolverAddr)
 	n, _ := strconv.Atoi(port)
 	return n
 }
@@ -56,8 +57,9 @@ Windows: one UAC prompt) that:
                wildcard routes don't resolve)
       Windows: an NRPT rule for .<tld> pointing at 127.0.0.1
   - installs the privileged helper as a root service (a launchd daemon or a
-    systemd unit) that binds ports 80 and 443 and hands them to your daemon.
-    Windows needs no helper: the daemon binds 53, 80 and 443 itself
+    systemd unit) that binds ports 80 and 443, and the DNS port split DNS
+    points at, and hands them to your daemon. Windows needs no helper: the
+    daemon binds 53, 80 and 443 itself
   - installs a per-user service (a LaunchAgent, a systemd user unit, or a
     Scheduled Task at logon on Windows) that runs 'sb daemon' as you
   - trusts Switchboard's local CA (created now if needed) in the system trust
@@ -292,8 +294,8 @@ func newHelperCmd() *cobra.Command {
 	helper := &cobra.Command{
 		Use:   "helper",
 		Short: "Privileged helper (internal; run by sb setup and the service manager)",
-		Long: `The privileged helper. It only binds ports 80 and 443 and passes them to
-your daemon, writes/removes split-DNS config (including the /etc/hosts block
+		Long: `The privileged helper. It only binds ports 80 and 443 and the DNS port and
+passes them to your daemon, writes/removes split-DNS config (including the /etc/hosts block
 on Linux systems without split DNS), installs/removes its services, and
 adds/removes the local CA in the system trust store.
 Run via 'sb setup', 'sb uninstall', 'sb trust' and 'sb untrust', never by hand.`,

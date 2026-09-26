@@ -33,13 +33,13 @@ The drop-ins:
 ```ini
 # Managed by Switchboard; removed by 'sb uninstall'
 [Resolve]
-DNS=127.0.0.1:15353
+DNS=127.0.0.1:535
 Domains=~test
 ```
 
 ```
 # Managed by Switchboard; removed by 'sb uninstall'
-server=/test/127.0.0.1#15353
+server=/test/127.0.0.1#535
 ```
 
 `Domains=~test` makes `.test` a routing-only domain, so only `.test` lookups go to

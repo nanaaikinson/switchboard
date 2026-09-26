@@ -37,7 +37,14 @@ Why each choice:
 - **NRPT rather than a DNS server setting.** An NRPT rule applies to one namespace
   only, so the rest of your DNS is untouched, and it covers every adapter, VPNs
   included. NRPT names a server by IP address only, with no port, so the daemon's DNS
-  server is on `127.0.0.1:53` on Windows (`127.0.0.1:15353` elsewhere).
+  server is on `127.0.0.1:53` on Windows (elsewhere `127.0.0.1:535`, bound by the root helper).
+- **Known limit: the ports are first come, first served.** Windows has no privileged
+  ports, so on a machine shared with other accounts, another user's process can bind
+  `127.0.0.1:53`, `:80` or `:443` while your daemon is stopped, and see or answer
+  traffic meant for Switchboard. It can't serve trusted HTTPS for your names, since it
+  doesn't have your CA key. `sb doctor` names the process holding each port and fails
+  if it runs as another account. On macOS and Linux the root helper binds these ports,
+  so this can't happen there.
 - **A Scheduled Task rather than a service.** Services run as SYSTEM or a service
   account; the daemon must run as you, in your logon session, to use your config dir
   and your control pipe.
@@ -50,9 +57,10 @@ Why each choice:
 
 `sb setup` prints the plan, asks for confirmation, then runs itself elevated through
 PowerShell's `Start-Process -Verb RunAs -Wait`: one UAC prompt. The elevated process is
-`sb helper install --user DOMAIN\you --sb-path <sb.exe> ...` and does only the three steps
-above. The unelevated `sb setup` passes your account name, so with over-the-shoulder
-elevation the task is still registered for you, not the administrator.
+`sb helper install --user DOMAIN\you --sid <your SID> --sb-path <sb.exe> ...` and does
+only the three steps above. The unelevated `sb setup` passes your account name and SID,
+and the helper checks that they match, so with over-the-shoulder elevation the task is
+still registered for you, not the administrator.
 
 An elevated process can't write to your console, so it writes its output to a
 temporary `sb-helper-*.log` that `sb setup` created, which `sb setup` prints and

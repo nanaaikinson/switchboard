@@ -21,7 +21,7 @@ var ErrNoHelper = posix.ErrNoHelper
 // helper does: bind 80/443, chown its socket, and rewrite /etc/hosts.
 func helperUnit(uid int) []byte {
 	return []byte(marker + `[Unit]
-Description=Switchboard privileged helper (binds ports 80 and 443 for the daemon)
+Description=Switchboard privileged helper (binds ports 80, 443 and DNS for the daemon)
 After=network.target
 
 [Service]
@@ -149,8 +149,13 @@ func (p *Platform) ServeHelper(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s := &posix.Server{Socket: p.o.HelperSocket, UID: p.o.UID, GID: gid, Addrs: p.o.HelperAddrs, Hosts: p.syncHosts}
+	s := &posix.Server{Socket: p.o.HelperSocket, UID: p.o.UID, GID: gid, Addrs: p.o.HelperAddrs, DNSAddr: p.o.HelperDNSAddr, Hosts: p.syncHosts}
 	return s.Serve(ctx)
+}
+
+// HelperDNS asks the helper for the DNS server's sockets.
+func (p *Platform) HelperDNS(ctx context.Context) (net.PacketConn, net.Listener, error) {
+	return posix.DNSSockets(ctx, p.o.HelperSocket)
 }
 
 // HelperListeners asks the helper for the HTTP and HTTPS listening sockets.

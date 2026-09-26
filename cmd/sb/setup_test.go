@@ -100,7 +100,7 @@ func TestSetupShowsPlanAndAbortsOnNo(t *testing.T) {
 		}
 		for _, want := range []string{
 			"sb setup will make these system changes:",
-			"1. Write /etc/resolver/test", "port 15353",
+			"1. Write /etc/resolver/test", "port 535",
 			"/Library/LaunchDaemons/dev.switchboard.helper.plist",
 			"Library/LaunchAgents/dev.switchboard.daemon.plist",
 			"sudo ", " helper install ", "--uid " + strconv.Itoa(os.Getuid()),
@@ -137,7 +137,7 @@ func TestSetupRunsSingleSudoOnYes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{" helper install ", "--uid " + strconv.Itoa(os.Getuid()), "--home " + home, "--sb-path /", "--tld test", "--dns-port 15353", "--ca-cert " + caCert, "--ca-fingerprint " + ca.Fingerprint()} {
+		for _, want := range []string{" helper install ", "--uid " + strconv.Itoa(os.Getuid()), "--home " + home, "--sb-path /", "--tld test", "--dns-port 535", "--ca-cert " + caCert, "--ca-fingerprint " + ca.Fingerprint()} {
 			if !strings.Contains(argv, want) {
 				t.Errorf("sudo argv %q missing %q", argv, want)
 			}

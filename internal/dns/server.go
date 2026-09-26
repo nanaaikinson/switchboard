@@ -102,6 +102,21 @@ func (s *Server) Listen() error {
 	return err
 }
 
+// Use serves on sockets bound elsewhere, such as by the privileged helper,
+// instead of Listen. Both must be on a loopback address.
+func (s *Server) Use(pc net.PacketConn, ln net.Listener) error {
+	for _, a := range []net.Addr{pc.LocalAddr(), ln.Addr()} {
+		if err := checkLoopback(a.String()); err != nil {
+			return err
+		}
+	}
+	s.addr = pc.LocalAddr().String()
+	s.pc, s.ln = pc, ln
+	s.udp = &dns.Server{PacketConn: pc, Handler: s}
+	s.tcp = &dns.Server{Listener: ln, Handler: s}
+	return nil
+}
+
 // listenTCP is net.Listen; swapped in tests.
 var listenTCP = net.Listen
 
@@ -113,7 +128,8 @@ func (s *Server) Addr() string {
 	return s.addr
 }
 
-// Serve answers queries until ctx is done or a listener fails. Call Listen first.
+// Serve answers queries until ctx is done or a listener fails. Call Listen or
+// Use first.
 func (s *Server) Serve(ctx context.Context) error {
 	if s.pc == nil {
 		return errors.New("dns: Serve called before Listen")

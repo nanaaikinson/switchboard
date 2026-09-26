@@ -416,6 +416,9 @@ func checkPort(ctx context.Context, p platform.Platform, port int, st api.Status
 	case strings.HasPrefix(owner, "http.sys"):
 		return checkResult{checkFail, name, "held by " + owner,
 			fmt.Sprintf("Something registered port %d with Windows' http.sys (see 'netsh http show servicestate'). Stop it (IIS: 'iisreset /stop' or remove the site's binding; other apps: their settings), then run 'sb setup' again.", port)}
+	case strings.Contains(owner, "run by another account"):
+		return checkResult{checkFail, name, "held by " + owner,
+			fmt.Sprintf("Another account's process holds port %d, so it could see or answer the traffic meant for Switchboard. Have an administrator stop it, then re-run 'sb setup'.", port)}
 	case owner != "":
 		return checkResult{checkFail, name, "held by " + owner,
 			fmt.Sprintf("Stop %s or move it off port %d, then re-run 'sb setup' to restart Switchboard.", owner, port)}

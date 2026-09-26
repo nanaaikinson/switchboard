@@ -308,3 +308,47 @@ func freeUDPPort(t *testing.T) int {
 	defer pc.Close()
 	return pc.LocalAddr().(*net.UDPAddr).Port
 }
+
+// The daemon serves on sockets the helper bound, on a privileged port.
+func TestUseServesOnGivenSockets(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := New("", []string{"test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Use(pc, ln); err != nil {
+		t.Fatal(err)
+	}
+	if s.Addr() != pc.LocalAddr().String() {
+		t.Errorf("Addr = %s, want %s", s.Addr(), pc.LocalAddr())
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Serve(ctx) }()
+	if got := answerIP(t, query(t, "udp", pc.LocalAddr().String(), "myapp.test", dns.TypeA)); got != "127.0.0.1" {
+		t.Errorf("udp answer %q", got)
+	}
+	if got := answerIP(t, query(t, "tcp", ln.Addr().String(), "myapp.test", dns.TypeA)); got != "127.0.0.1" {
+		t.Errorf("tcp answer %q", got)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	wide, err := net.ListenPacket("udp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wide.Close()
+	if err := s.Use(wide, ln); err == nil {
+		t.Error("Use accepted a socket beyond loopback")
+	}
+}

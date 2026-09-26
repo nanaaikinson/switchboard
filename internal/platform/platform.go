@@ -58,6 +58,10 @@ type Platform interface {
 	// listening sockets to the user's daemon. HelperListeners is the daemon side.
 	ServeHelper(ctx context.Context) error
 	HelperListeners(ctx context.Context) ([]net.Listener, error)
+	// HelperDNS asks the helper for the DNS server's UDP and TCP sockets,
+	// bound on the privileged dns.ResolverAddr. It returns an error matching
+	// errors.ErrUnsupported where there is no helper.
+	HelperDNS(ctx context.Context) (net.PacketConn, net.Listener, error)
 	// SyncHosts asks the helper to list names in its hosts-file block, on
 	// systems where that is the split-DNS fallback. It returns an error
 	// matching errors.ErrUnsupported where split DNS never needs it.
