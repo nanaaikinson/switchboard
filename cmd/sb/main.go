@@ -14,6 +14,10 @@ import (
 // version is set at build time with -ldflags "-X main.version=v1.2.3".
 var version = "dev"
 
+// The helper reports platform.Version, and sb doctor compares it with its
+// own. Set once here: -ldflags -X has set version by the time init runs.
+func init() { platform.Version = version }
+
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "sb: %v\n", err)
@@ -22,7 +26,6 @@ func main() {
 }
 
 func newRootCmd() *cobra.Command {
-	platform.Version = version // the helper reports it; doctor compares
 	root := &cobra.Command{
 		Use:   "sb",
 		Short: "Map local ports to trusted HTTPS names",
