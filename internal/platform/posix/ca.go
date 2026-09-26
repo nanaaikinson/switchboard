@@ -9,15 +9,15 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
-	"time"
 
 	"github.com/nanaaikinson/switchboard/internal/pki"
 )
 
-// ReadCA reads and validates a CA certificate without following symlinks,
-// since the privileged helper reads it from the user's config dir. With
-// current set, the certificate must also be valid now.
-func ReadCA(path string, current bool) (*x509.Certificate, error) {
+// ReadCA reads a CA certificate without following symlinks, since the
+// privileged helper reads it from the user's config dir, and checks it with
+// validate: pki.ValidateNow before trusting it, pki.ValidateRemovable before
+// removing it.
+func ReadCA(path string, validate func(*x509.Certificate) error) (*x509.Certificate, error) {
 	if !filepath.IsAbs(path) {
 		return nil, fmt.Errorf("CA path %q is not absolute", path)
 	}
@@ -40,10 +40,6 @@ func ReadCA(path string, current bool) (*x509.Certificate, error) {
 	cert, err := pki.ParseCert(data)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	validate := pki.ValidateConstraints
-	if current {
-		validate = func(c *x509.Certificate) error { return pki.Validate(c, time.Now()) }
 	}
 	if err := validate(cert); err != nil {
 		return nil, fmt.Errorf("%s is not a Switchboard CA: %w", path, err)

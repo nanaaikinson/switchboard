@@ -293,6 +293,9 @@ func newIssuer(tlds []string, px proxy.Proxy) (*pki.Issuer, *pki.CA, error) {
 			slog.Warn("local CA does not cover a TLD; run 'sb doctor'", "tld", tld)
 		}
 	}
+	if ca.Legacy {
+		slog.Warn("local CA is from an earlier version and not limited to TLS server certificates; run 'sb trust' to replace it")
+	}
 	return pki.NewIssuer(ca, pki.IssuerOptions{NameFor: func(host string) string {
 		if _, wildcard, ok := px.Lookup(host); ok && wildcard {
 			if _, parent, _ := strings.Cut(host, "."); strings.Contains(parent, ".") {

@@ -150,7 +150,9 @@ Keep a second VM snapshot, or a second VM, with IIS installed for steps 24 to 27
 10. Task Manager → Details: `sb.exe` runs as you, not elevated (the "Elevated" column
     says No), under a `conhost.exe`. **No visible console window.**
 11. `certlm.msc` → Trusted Root Certification Authorities → Certificates:
-    "Switchboard Local CA". Open it: Name Constraints permits `.test`. `certmgr.msc` (your user store) doesn't list it.
+    "Switchboard Local CA". Open it: Name Constraints permits `.test`, Enhanced Key
+    Usage is Server Authentication only, and on the Details tab "Edit Properties..."
+    shows only Server Authentication enabled. `certmgr.msc` (your user store) doesn't list it.
 12. `Get-NetTCPConnection -State Listen -LocalPort 53,80,443`: 127.0.0.1 (and ::1 for
     80/443) owned by the `sb.exe` PID. `Get-NetUDPEndpoint -LocalPort 53`: 127.0.0.1.
 13. `Resolve-DnsName anything.test` and `Resolve-DnsName deep.sub.anything.test`:
@@ -232,10 +234,11 @@ Keep a second VM snapshot, or a second VM, with IIS installed for steps 24 to 27
 35. As the standard user from step 28, with a fresh snapshot of their setup:
     `sb setup` and type the administrator's credentials in UAC. The task is
     `Daemon-<standard user's SID>`, runs as the standard user, and the log was
-    printed. As that user, create a symbolic link or hard link named
+    printed. Running the elevated helper with a `--sid` that isn't the standard
+    user's is refused ("is not the SID of"). As that user, create a symbolic link or hard link named
     `%TEMP%\sb-helper-x.log` pointing at a file only admins can write, and run
     From an elevated shell, run
-    `sb helper trust --log <that path> --ca-cert "$env:APPDATA\switchboard\pki\ca\ca.pem"`.
+    `sb helper trust --log <that path> --ca-cert "$env:APPDATA\switchboard\pki\ca\ca.pem" --ca-fingerprint <fingerprint from sb trust --print-plan> --uid -1 --user <DOMAIN\name> --sid <SID>`.
     It still works (trust is idempotent), and the target file is unchanged.
 
 **Uninstall**

@@ -3,7 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"os"
@@ -13,7 +18,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/nanaaikinson/switchboard/internal/pki"
+	"github.com/nanaaikinson/switchboard/internal/pki/pkitest"
 	"github.com/nanaaikinson/switchboard/internal/platform"
 )
 
@@ -43,13 +51,16 @@ func runWithInput(t *testing.T, input string, args ...string) (string, error) {
 }
 
 // nssSpy wraps the real platform but records NSS calls instead of making them.
+// It also records daemon restarts instead of making them.
 type nssSpy struct {
 	platform.Platform
 	trusted, untrusted []string
+	restarts           int
 }
 
 func (s *nssSpy) TrustNSS(path string) error   { s.trusted = append(s.trusted, path); return nil }
 func (s *nssSpy) UntrustNSS(path string) error { s.untrusted = append(s.untrusted, path); return nil }
+func (s *nssSpy) RestartDaemon() (bool, error) { s.restarts++; return true, nil }
 
 // setupEnv isolates tests of setup, uninstall, trust and untrust: macOS as a
 // normal user, a temp config dir (so the CA is created there), and no NSS
@@ -92,7 +103,7 @@ func TestSetupShowsPlanAndAbortsOnNo(t *testing.T) {
 			"1. Write /etc/resolver/test", "port 15353",
 			"/Library/LaunchDaemons/dev.switchboard.helper.plist",
 			"Library/LaunchAgents/dev.switchboard.daemon.plist",
-			"sudo ", " helper install --uid " + strconv.Itoa(os.Getuid()),
+			"sudo ", " helper install ", "--uid " + strconv.Itoa(os.Getuid()),
 			"/Library/Keychains/System.keychain", "can only sign names under .test", "SHA-256 fingerprint",
 			"Continue? [y/N]", "Aborted; nothing was changed.",
 		} {
@@ -122,7 +133,11 @@ func TestSetupRunsSingleSudoOnYes(t *testing.T) {
 		}
 		argv := strings.Join((*calls)[0], " ")
 		home, _ := os.UserHomeDir()
-		for _, want := range []string{" helper install ", "--uid " + strconv.Itoa(os.Getuid()), "--home " + home, "--sb-path /", "--tld test", "--dns-port 15353", "--ca-cert " + caCert} {
+		ca, err := ensureCA()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{" helper install ", "--uid " + strconv.Itoa(os.Getuid()), "--home " + home, "--sb-path /", "--tld test", "--dns-port 15353", "--ca-cert " + caCert, "--ca-fingerprint " + ca.Fingerprint()} {
 			if !strings.Contains(argv, want) {
 				t.Errorf("sudo argv %q missing %q", argv, want)
 			}
@@ -171,11 +186,13 @@ func TestUninstall(t *testing.T) {
 		t.Fatalf("accept: err=%v calls=%v\n%s", err, *calls, out)
 	}
 	argv := strings.Join((*calls)[0], " ")
-	if !strings.Contains(argv, " helper uninstall --uid "+strconv.Itoa(os.Getuid())) || !strings.Contains(argv, "--tld test") {
+	if !strings.Contains(argv, " helper uninstall ") || !strings.Contains(argv, "--uid "+strconv.Itoa(os.Getuid())) || !strings.Contains(argv, "--tld test") {
 		t.Errorf("sudo argv = %q", argv)
 	}
-	if strings.Contains(argv, "--ca-cert") || len(spy.untrusted) != 0 {
-		t.Errorf("untrusted a CA that does not exist: argv %q, NSS %v", argv, spy.untrusted)
+	// Without CA files the helper still removes the user's CAs from the
+	// system store, but there is nothing to remove from NSS.
+	if strings.Contains(argv, "--ca-cert") || len(spy.untrusted) != 0 || !strings.Contains(out, "every Switchboard CA of yours") {
+		t.Errorf("no CA files: argv %q, NSS %v\n%s", argv, spy.untrusted, out)
 	}
 
 	// With a CA, uninstall also untrusts it, in the system store and NSS.
@@ -189,7 +206,7 @@ func TestUninstall(t *testing.T) {
 	if argv := strings.Join((*calls)[1], " "); !strings.HasSuffix(argv, "--ca-cert "+caCert) {
 		t.Errorf("sudo argv = %q, want --ca-cert %s", argv, caCert)
 	}
-	if !strings.Contains(out, "delete it from /Library/Keychains/System.keychain") || strings.Join(spy.untrusted, ",") != caCert {
+	if !strings.Contains(out, "delete them from /Library/Keychains/System.keychain") || strings.Join(spy.untrusted, ",") != caCert {
 		t.Errorf("NSS untrust %v; output:\n%s", spy.untrusted, out)
 	}
 }
@@ -210,7 +227,11 @@ func TestTrust(t *testing.T) {
 	if err != nil || len(*calls) != 1 {
 		t.Fatalf("accept: err=%v calls=%v\n%s", err, *calls, out)
 	}
-	if argv := strings.Join((*calls)[0], " "); !strings.HasSuffix(argv, " helper trust --ca-cert "+caCert) {
+	ca, err := ensureCA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if argv := strings.Join((*calls)[0], " "); !strings.Contains(argv, " helper trust --ca-cert "+caCert+" --ca-fingerprint "+ca.Fingerprint()+" --uid "+strconv.Itoa(os.Getuid())) {
 		t.Errorf("sudo argv = %q", argv)
 	}
 	if strings.Join(spy.trusted, ",") != caCert || !strings.Contains(out, "The Switchboard CA is trusted.") {
@@ -229,9 +250,11 @@ func TestTrust(t *testing.T) {
 func TestUntrust(t *testing.T) {
 	spy, caCert := setupEnv(t)
 	calls := fakeSudo(t, nil)
+	// Without CA files, the helper still removes the user's CAs from the
+	// system store: the files may have been deleted while the CA was trusted.
 	out, err := runWithInput(t, "", "untrust", "--yes")
-	if err != nil || len(*calls) != 0 || !strings.Contains(out, "no Switchboard CA") {
-		t.Fatalf("no CA: err=%v calls=%v\n%s", err, *calls, out)
+	if err != nil || len(*calls) != 1 || strings.Contains(strings.Join((*calls)[0], " "), "--ca-cert") || len(spy.untrusted) != 0 {
+		t.Fatalf("no CA: err=%v calls=%v nss=%v\n%s", err, *calls, spy.untrusted, out)
 	}
 	if _, err := os.Stat(caCert); err == nil {
 		t.Fatal("untrust created a CA")
@@ -240,10 +263,10 @@ func TestUntrust(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, err = runWithInput(t, "y\n", "untrust")
-	if err != nil || len(*calls) != 1 {
+	if err != nil || len(*calls) != 2 {
 		t.Fatalf("with CA: err=%v calls=%v\n%s", err, *calls, out)
 	}
-	if argv := strings.Join((*calls)[0], " "); !strings.HasSuffix(argv, " helper untrust --ca-cert "+caCert) {
+	if argv := strings.Join((*calls)[1], " "); !strings.Contains(argv, " helper untrust --ca-cert "+caCert+" --uid ") {
 		t.Errorf("sudo argv = %q", argv)
 	}
 	if strings.Join(spy.untrusted, ",") != caCert || !strings.Contains(out, "no longer trusted") {
@@ -254,16 +277,87 @@ func TestUntrust(t *testing.T) {
 	}
 }
 
+// A CA from an earlier version (no EKU, so not limited to TLS) is replaced:
+// sb trust stages a new CA, has the helper trust it (removing the old one
+// from the system store), then swaps the files and restarts the daemon.
+func TestTrustReplacesLegacyCA(t *testing.T) {
+	spy, caCert := setupEnv(t)
+	writeLegacyCA(t, filepath.Dir(filepath.Dir(caCert)))
+	old, err := pki.Load(filepath.Dir(filepath.Dir(caCert)))
+	if err != nil || !old.Legacy {
+		t.Fatalf("legacy CA: %v", err)
+	}
+	calls := fakeSudo(t, nil)
+	out, err := runWithInput(t, "n\n", "trust")
+	if err != nil || len(*calls) != 0 || !strings.Contains(out, "It replaces your current CA (SHA-256 "+old.Fingerprint()) {
+		t.Fatalf("decline: err=%v calls=%v\n%s", err, *calls, out)
+	}
+	if cur, _ := pki.Load(filepath.Dir(filepath.Dir(caCert))); cur.Fingerprint() != old.Fingerprint() {
+		t.Fatal("declining replaced the CA")
+	}
+	out, err = runWithInput(t, "", "trust", "--yes")
+	if err != nil || len(*calls) != 1 {
+		t.Fatalf("accept: err=%v calls=%v\n%s", err, *calls, out)
+	}
+	cur, err := pki.Load(filepath.Dir(filepath.Dir(caCert)))
+	if err != nil || cur.Legacy || cur.Fingerprint() == old.Fingerprint() {
+		t.Fatalf("after trust: %v, legacy %v", err, cur != nil && cur.Legacy)
+	}
+	argv := strings.Join((*calls)[0], " ")
+	if !strings.Contains(argv, "--ca-fingerprint "+cur.Fingerprint()) || strings.Contains(argv, "--ca-cert "+caCert+" ") {
+		t.Errorf("helper was not given the staged CA: %q", argv)
+	}
+	if strings.Join(spy.untrusted, ",") != caCert || strings.Join(spy.trusted, ",") != caCert || spy.restarts != 1 {
+		t.Errorf("NSS untrust %v, trust %v, restarts %d", spy.untrusted, spy.trusted, spy.restarts)
+	}
+}
+
+// writeLegacyCA writes a CA like the ones earlier versions made into the PKI
+// dir: no EKU, and tagged "login@host".
+func writeLegacyCA(t *testing.T, dir string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := pkitest.CA(t, "", func(c *x509.Certificate) {
+		c.ExtKeyUsage = nil
+		c.Subject.OrganizationalUnit = []string{"me@laptop"}
+		c.NotAfter = time.Now().Add(pki.CAValidity)
+	})
+	tmpl.PublicKey, tmpl.SubjectKeyId = nil, nil // signed again with key below
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caDir := filepath.Join(dir, "ca")
+	if err := os.MkdirAll(caDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, block := range map[string]*pem.Block{
+		"ca.pem":     {Type: "CERTIFICATE", Bytes: der},
+		"ca-key.pem": {Type: "PRIVATE KEY", Bytes: keyDER},
+	} {
+		if err := os.WriteFile(filepath.Join(caDir, name), pem.EncodeToMemory(block), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestHelperRequiresRoot(t *testing.T) {
 	if isAdmin() { // root, or an elevated Windows process (GitHub's Windows runners are)
 		t.Skip("running with administrator rights: the helper would really run")
 	}
 	for _, args := range [][]string{
-		{"helper", "install", "--uid", "501", "--home", "/Users/x", "--sb-path", "/usr/local/bin/sb"},
-		{"helper", "uninstall", "--uid", "501", "--home", "/Users/x"},
+		{"helper", "install", "--uid", "501", "--home", "/Users/x", "--sb-path", "/usr/local/bin/sb", "--sid", "S-1-5-21-1"},
+		{"helper", "uninstall", "--uid", "501", "--home", "/Users/x", "--sid", "S-1-5-21-1"},
 		{"helper", "serve", "--uid", "501"},
-		{"helper", "trust", "--ca-cert", "/tmp/ca.pem"},
-		{"helper", "untrust", "--ca-cert", "/tmp/ca.pem"},
+		{"helper", "trust", "--ca-cert", "/tmp/ca.pem", "--ca-fingerprint", "ab", "--uid", "501", "--sid", "S-1-5-21-1"},
+		{"helper", "untrust", "--ca-cert", "/tmp/ca.pem", "--uid", "501", "--sid", "S-1-5-21-1"},
 	} {
 		_, err := runWithInput(t, "", args...)
 		if err == nil || !strings.Contains(err.Error(), "must run as root") && !strings.Contains(err.Error(), "must run as administrator") {

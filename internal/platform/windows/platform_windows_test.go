@@ -6,10 +6,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/nanaaikinson/switchboard/internal/pki"
+	"github.com/nanaaikinson/switchboard/internal/pki/pkitest"
 )
 
 // fakePS answers scripts by what they contain and records them. It never
@@ -28,7 +30,8 @@ func (f *fakePS) run(script string) ([]byte, error) {
 // fakeStore is a certificate store in memory.
 type fakeStore struct{ certs []*x509.Certificate }
 
-func (s *fakeStore) Add(c *x509.Certificate) error { s.certs = append(s.certs, c); return nil }
+func (s *fakeStore) Add(c *x509.Certificate) error      { s.certs = append(s.certs, c); return nil }
+func (s *fakeStore) List() ([]*x509.Certificate, error) { return slices.Clone(s.certs), nil }
 func (s *fakeStore) Remove(c *x509.Certificate) (bool, error) {
 	for i, x := range s.certs {
 		if x.Equal(c) {
@@ -138,15 +141,42 @@ func TestTrust(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sid, err := CurrentSID() // the CA is tagged with the SID of whoever made it
+	if err != nil {
+		t.Fatal(err)
+	}
 	p, _, store := newTest(t, ok)
-	if err := p.TrustCA(ca.CertPath()); err != nil || len(store.certs) != 1 {
-		t.Fatalf("trust: %v, %d", err, len(store.certs))
+	p.o.SID = sid
+	older := pkitest.CA(t, sid, nil)
+	legacy := pkitest.CA(t, "", func(c *x509.Certificate) {
+		c.ExtKeyUsage = nil
+		c.Subject.OrganizationalUnit = []string{`CONTOSO\jane@laptop`}
+	})
+	others := pkitest.CA(t, "S-1-5-21-1-2-3-1002", nil)
+	store.certs = []*x509.Certificate{older, legacy, others}
+	if err := p.TrustCA(ca.CertPath(), ca.Fingerprint()); err != nil {
+		t.Fatal(err)
 	}
-	if err := p.UntrustCA(ca.CertPath()); err != nil || len(store.certs) != 0 {
-		t.Errorf("untrust: %v, %d", err, len(store.certs))
+	if len(store.certs) != 2 || !store.certs[0].Equal(others) || !store.certs[1].Equal(ca.Cert) {
+		t.Fatalf("store after trust: %d certs", len(store.certs))
 	}
-	if err := p.TrustCA(filepath.Join(t.TempDir(), "nope.pem")); err == nil {
-		t.Error("missing file trusted")
+	for name, tc := range map[string]struct{ path, fp string }{
+		"missing":        {filepath.Join(t.TempDir(), "nope.pem"), ca.Fingerprint()},
+		"no fingerprint": {ca.CertPath(), ""},
+		"swapped":        {pkitest.Write(t, older), ca.Fingerprint()},
+		"another user's": {pkitest.Write(t, others), pki.Fingerprint(others)},
+		"legacy":         {pkitest.Write(t, legacy), pki.Fingerprint(legacy)},
+	} {
+		if err := p.TrustCA(tc.path, tc.fp); err == nil {
+			t.Errorf("%s: trusted", name)
+		}
+	}
+	store.certs = append(store.certs, legacy)
+	if err := os.Remove(ca.CertPath()); err != nil { // the CA file is gone: untrust still finds it
+		t.Fatal(err)
+	}
+	if err := p.UntrustCA(""); err != nil || len(store.certs) != 1 || !store.certs[0].Equal(others) {
+		t.Errorf("untrust: %v, %d certs left", err, len(store.certs))
 	}
 }
 

@@ -78,19 +78,19 @@ Supports macOS, Linux (systemd) and Windows 10 1809+ / 11.`,
 			if err := p.Validate(); err != nil {
 				return fmt.Errorf("setup: %w", err)
 			}
-			ca, err := ensureCA()
+			target, err := caToTrust()
 			if err != nil {
 				return fmt.Errorf("setup: %w", err)
 			}
 			tld, port := defaultTLD(), defaultDNSPort()
-			argv := []string{opts.SbPath, "helper", "install",
-				"--uid", strconv.Itoa(opts.UID), "--home", opts.Home, "--sb-path", opts.SbPath,
-				"--tld", tld, "--dns-port", strconv.Itoa(port), "--ca-cert", ca.CertPath(), "--user", opts.User}
+			argv := append([]string{opts.SbPath, "helper", "install", "--home", opts.Home, "--sb-path", opts.SbPath,
+				"--tld", tld, "--dns-port", strconv.Itoa(port)}, target.helperArgs()...)
+			argv = append(argv, helperUserArgs(opts)...)
 			ran, err := runPrivileged(cmd, p, f, privPlan{
 				Title:   "sb setup will make these system changes:",
-				Changes: append(p.InstallPlan(tld, port), p.TrustPlan(ca.CertPath())...),
+				Changes: append(p.InstallPlan(tld, port), p.TrustPlan(target.ca.CertPath())...),
 				Command: argv,
-				Notes:   caSummary(ca) + "\nUndo everything later with 'sb uninstall'.",
+				Notes:   target.notes() + "\nUndo everything later with 'sb uninstall'.",
 				Prompt:  "Switchboard wants to set up ." + tld + " names, trusted HTTPS and its background services.",
 			})
 			if err != nil {
@@ -99,7 +99,9 @@ Supports macOS, Linux (systemd) and Windows 10 1809+ / 11.`,
 			if !ran {
 				return nil
 			}
-			trustNSS(cmd, p, ca.CertPath())
+			if err := target.finish(cmd, p); err != nil {
+				return fmt.Errorf("setup: %w", err)
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Setup complete. Try: sb add myapp 3000 && sb open myapp\n")
 			return nil
 		},
@@ -134,14 +136,15 @@ the CA files in the config dir are kept; delete that folder to remove them too.`
 			if len(plan) == 0 {
 				return fmt.Errorf("uninstall: %w", p.Validate())
 			}
-			argv := []string{opts.SbPath, "helper", "uninstall",
-				"--uid", strconv.Itoa(opts.UID), "--home", opts.Home, "--tld", tld, "--user", opts.User}
+			argv := append([]string{opts.SbPath, "helper", "uninstall", "--home", opts.Home, "--tld", tld}, helperUserArgs(opts)...)
 			caCert, err := existingCACert()
 			if err != nil {
 				return fmt.Errorf("uninstall: %w", err)
 			}
+			// The helper removes the user's CAs from the system store even
+			// when the CA files are gone.
+			plan = append(plan, p.UntrustPlan(caCert)...)
 			if caCert != "" {
-				plan = append(plan, p.UntrustPlan(caCert)...)
 				argv = append(argv, "--ca-cert", caCert)
 			}
 			ran, err := runPrivileged(cmd, p, f, privPlan{
@@ -171,6 +174,9 @@ var currentPlatform = func() (platform.Platform, platform.Options) {
 	o := platform.Options{UID: os.Getuid()}
 	if u, err := user.Current(); err == nil {
 		o.User = u.Username
+		if runtime.GOOS == "windows" {
+			o.SID = u.Uid
+		}
 	}
 	o.Home, _ = os.UserHomeDir()
 	o.SbPath, _ = os.Executable()
@@ -294,7 +300,7 @@ Run via 'sb setup', 'sb uninstall', 'sb trust' and 'sb untrust', never by hand.`
 		Hidden: true,
 	}
 	var o platform.Options
-	var tld, caCert, logPath string
+	var tld, caCert, caFingerprint, logPath string
 	var dnsPort int
 	requireRoot := func(cmd *cobra.Command, _ []string) error {
 		if logPath != "" {
@@ -312,12 +318,21 @@ Run via 'sb setup', 'sb uninstall', 'sb trust' and 'sb untrust', never by hand.`
 			if !isAdmin() {
 				return errors.New("sb helper must run as administrator; use 'sb setup' or 'sb uninstall' instead")
 			}
+			if cmd.Flags().Lookup("sid") != nil {
+				// The elevated account may not be the user's (over-the-shoulder UAC).
+				return checkUserSID(o.User, o.SID)
+			}
 			return nil
 		}
 		if os.Geteuid() != 0 {
 			return errors.New("sb helper must run as root; use 'sb setup' or 'sb uninstall' instead")
 		}
-		return nil
+		if cmd.Flags().Lookup("uid") != nil && o.UID <= 0 {
+			return errors.New("--uid must be a regular user")
+		}
+		// Root's temp files go in the sticky /tmp, never a directory the
+		// user's environment names, where they could be swapped.
+		return os.Setenv("TMPDIR", "/tmp")
 	}
 
 	install := &cobra.Command{
@@ -334,7 +349,7 @@ Run via 'sb setup', 'sb uninstall', 'sb trust' and 'sb untrust', never by hand.`
 				return err
 			}
 			if caCert != "" {
-				if err := p.TrustCA(caCert); err != nil {
+				if err := p.TrustCA(caCert, caFingerprint); err != nil {
 					return fmt.Errorf("installed resolver, helper and daemon, but %w; run 'sb trust' to retry", err)
 				}
 			}
@@ -345,14 +360,8 @@ Run via 'sb setup', 'sb uninstall', 'sb trust' and 'sb untrust', never by hand.`
 	uninstall := &cobra.Command{
 		Use: "uninstall", Short: "Remove system changes (root)", Args: cobra.NoArgs, PreRunE: requireRoot,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if o.UID <= 0 && runtime.GOOS != "windows" { // Windows has no uids
-				return errors.New("--uid must be a regular user")
-			}
 			p := platform.New(o)
-			errs := []error{p.RemoveService(), p.RemoveResolver(tld)}
-			if caCert != "" {
-				errs = append(errs, p.UntrustCA(caCert))
-			}
+			errs := []error{p.RemoveService(), p.RemoveResolver(tld), p.UntrustCA(caCert)}
 			for _, err := range errs {
 				if err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
@@ -364,9 +373,6 @@ Run via 'sb setup', 'sb uninstall', 'sb trust' and 'sb untrust', never by hand.`
 	serve := &cobra.Command{
 		Use: "serve", Short: "Serve the listener protocol (root, launchd)", Args: cobra.NoArgs, PreRunE: requireRoot,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if o.UID <= 0 {
-				return errors.New("--uid must be a regular user")
-			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			return platform.New(o).ServeHelper(ctx)
@@ -375,7 +381,7 @@ Run via 'sb setup', 'sb uninstall', 'sb trust' and 'sb untrust', never by hand.`
 	trust := &cobra.Command{
 		Use: "trust", Short: "Trust the local CA in the system store (root)", Args: cobra.NoArgs, PreRunE: requireRoot,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := platform.New(o).TrustCA(caCert); err != nil {
+			if err := platform.New(o).TrustCA(caCert, caFingerprint); err != nil {
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Trusted the CA in the system trust store.")
@@ -395,14 +401,21 @@ Run via 'sb setup', 'sb uninstall', 'sb trust' and 'sb untrust', never by hand.`
 	for _, c := range []*cobra.Command{install, uninstall, trust, untrust} {
 		c.Flags().StringVar(&caCert, "ca-cert", "", "absolute path of the local CA certificate")
 		c.Flags().StringVar(&logPath, "log", "", "write output to this file (for elevated runs without a console)")
-	}
-	for _, c := range []*cobra.Command{install, uninstall} {
 		c.Flags().StringVar(&o.User, "user", "", "login name of that user (DOMAIN\\name on Windows)")
+		c.Flags().StringVar(&o.SID, "sid", "", "Windows: SID of that user")
+		if runtime.GOOS == "windows" {
+			_ = c.MarkFlagRequired("sid")
+		}
 	}
-	for _, c := range []*cobra.Command{trust, untrust} {
+	for _, c := range []*cobra.Command{install, trust} {
+		c.Flags().StringVar(&caFingerprint, "ca-fingerprint", "", "SHA-256 fingerprint of the CA the user confirmed; any other is refused")
+	}
+	install.MarkFlagsRequiredTogether("ca-cert", "ca-fingerprint")
+	for _, c := range []*cobra.Command{trust} {
 		_ = c.MarkFlagRequired("ca-cert")
+		_ = c.MarkFlagRequired("ca-fingerprint")
 	}
-	for _, c := range []*cobra.Command{install, uninstall, serve} {
+	for _, c := range []*cobra.Command{install, uninstall, serve, trust, untrust} {
 		c.Flags().IntVar(&o.UID, "uid", 0, "uid of the user Switchboard is installed for")
 		_ = c.MarkFlagRequired("uid")
 	}

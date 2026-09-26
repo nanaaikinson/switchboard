@@ -227,6 +227,8 @@ func checkCA(tlds []string) checkResult {
 		return checkResult{checkFail, name, "not created yet", "Run 'sb trust' (or 'sb setup')."}
 	case err != nil:
 		return checkResult{checkFail, name, err.Error(), rotate}
+	case ca.Legacy:
+		return checkResult{checkFail, name, "made by an earlier version and not limited to TLS server certificates, so its key could sign code or mail", "Run 'sb trust' to replace it."}
 	}
 	for _, tld := range tlds {
 		if !ca.Permits("x." + tld) {

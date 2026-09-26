@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -195,15 +196,23 @@ func TestDoctorNamesHTTPSys(t *testing.T) {
 
 func TestDoctorCAChecks(t *testing.T) {
 	dir := configDir(t)
-	if _, err := pki.LoadOrCreate(filepath.Join(dir, "pki"), []string{"dev"}); err != nil {
+	if _, err := pki.LoadOrCreate(filepath.Join(dir, "pki"), []string{"local"}); err != nil {
 		t.Fatal(err)
 	}
 	r := checkCA([]string{"test"})
-	if r.status != checkFail || r.detail != "cannot sign .test names (limited to dev)" || !strings.Contains(r.fix, "sb untrust") {
+	if r.status != checkFail || r.detail != "cannot sign .test names (limited to local)" || !strings.Contains(r.fix, "sb untrust") {
 		t.Errorf("wrong TLD: %+v", r)
 	}
-	if r := checkCA([]string{"dev"}); r.status != checkPass {
+	if r := checkCA([]string{"local"}); r.status != checkPass {
 		t.Errorf("right TLD: %+v", r)
+	}
+
+	if err := os.RemoveAll(filepath.Join(dir, "pki")); err != nil {
+		t.Fatal(err)
+	}
+	writeLegacyCA(t, filepath.Join(dir, "pki"))
+	if r := checkCA([]string{"test"}); r.status != checkFail || !strings.Contains(r.detail, "not limited to TLS") || r.fix != "Run 'sb trust' to replace it." {
+		t.Errorf("legacy CA: %+v", r)
 	}
 }
 

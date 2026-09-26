@@ -99,7 +99,9 @@ Everything in the [macOS security design](setup-macos.md#security-design) applie
 - the root service runs a root-owned copy of `sb`;
 - root writes into your home only below real directories you own (`~/.config`,
   `~/.config/systemd`, `~/.config/systemd/user` are each checked);
-- root only trusts a name-constrained Switchboard CA.
+- root only trusts a name-constrained Switchboard CA, made by you, with the fingerprint
+  you confirmed; its anchor file is named `switchboard-<serial>`, never after anything
+  in the certificate.
 
 On top of that, the helper's unit is sandboxed to exactly what it does:
 

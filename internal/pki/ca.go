@@ -19,6 +19,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,11 +44,30 @@ const (
 // ErrNoCA means the CA has not been created yet.
 var ErrNoCA = errors.New("no Switchboard CA yet")
 
+// errNoServerAuth means a CA is not limited to TLS server certificates, as
+// CAs made by earlier versions of Switchboard are not.
+var errNoServerAuth = errors.New("is not limited to TLS server certificates")
+
+// Subject of every Switchboard CA. Trust stores are searched for it when a CA
+// is removed, so a replaced or deleted ca.pem can't leave one trusted.
+const (
+	CAName = "Switchboard Local CA"
+	caOrg  = "Switchboard"
+)
+
+// AllowedTLDs are the only TLDs a CA may be limited to: names reserved for
+// local use (RFC 2606, 6761, 6762 and ICANN's .internal) that no public site
+// can have. The privileged helper refuses to trust a CA for any other.
+var AllowedTLDs = []string{"test", "local", "localhost", "internal", "example", "invalid"}
+
 // CA is the local root certificate authority.
 type CA struct {
 	Cert *x509.Certificate
 	key  crypto.Signer
 	dir  string // the PKI dir
+	// Legacy is set for a CA made before CAs were limited to TLS server
+	// certificates. It still works, but 'sb trust' replaces it.
+	Legacy bool
 }
 
 // DefaultDir is the PKI dir inside the config dir.
@@ -100,10 +120,12 @@ func Load(dir string) (*CA, error) {
 	if !publicKeysEqual(cert.PublicKey, key.Public()) {
 		return nil, fmt.Errorf("CA %s: key does not match certificate; run 'sb untrust', delete %s, then run 'sb trust'", caDir, caDir)
 	}
-	if err := Validate(cert, time.Now()); err != nil {
+	err = Validate(cert, time.Now())
+	legacy := errors.Is(err, errNoServerAuth)
+	if err != nil && !legacy {
 		return nil, fmt.Errorf("CA %s: %w", caDir, err)
 	}
-	return &CA{Cert: cert, key: key, dir: dir}, nil
+	return &CA{Cert: cert, key: key, dir: dir, Legacy: legacy}, nil
 }
 
 // LoadOrCreate loads the CA from dir, creating one constrained to tlds if
@@ -119,6 +141,41 @@ func LoadOrCreate(dir string, tlds []string) (*CA, error) {
 	return Load(dir)
 }
 
+// nextDirName is a PKI dir inside the PKI dir that holds a new CA while it
+// is trusted, before it replaces the current one.
+const nextDirName = ".next"
+
+// Stage makes a new CA constrained to tlds to replace the one in dir,
+// dropping any earlier staged one. It takes effect with Promote.
+func Stage(dir string, tlds []string) (*CA, error) {
+	next := filepath.Join(dir, nextDirName)
+	if err := os.RemoveAll(next); err != nil {
+		return nil, fmt.Errorf("stage CA: %w", err)
+	}
+	return LoadOrCreate(next, tlds)
+}
+
+// Promote replaces the CA in dir with the staged one. Leaves the old CA
+// signed are reissued on first use.
+func Promote(dir string) error {
+	next := filepath.Join(dir, nextDirName)
+	if _, err := Load(next); err != nil {
+		return fmt.Errorf("replace CA: %w", err)
+	}
+	old, err := os.MkdirTemp(dir, ".old-*")
+	if err != nil {
+		return fmt.Errorf("replace CA: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(old) }()
+	if err := os.Rename(filepath.Join(dir, caDirName), filepath.Join(old, caDirName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("replace CA: %w", err)
+	}
+	if err := os.Rename(filepath.Join(next, caDirName), filepath.Join(dir, caDirName)); err != nil {
+		return fmt.Errorf("replace CA: %w", err)
+	}
+	return os.RemoveAll(next)
+}
+
 // create writes a new CA into a temp dir and renames it into place, so the
 // cert and key always match. If another process wins the race, its CA stays.
 func create(dir string, tlds []string) error {
@@ -126,8 +183,8 @@ func create(dir string, tlds []string) error {
 		return errors.New("create CA: no TLDs to constrain it to")
 	}
 	for _, tld := range tlds {
-		if !config.ValidHostname(tld) || strings.Contains(tld, ".") || strings.HasPrefix(tld, "*") {
-			return fmt.Errorf("create CA: invalid TLD %q", tld)
+		if !slices.Contains(AllowedTLDs, tld) {
+			return fmt.Errorf("create CA: .%s is not a TLD reserved for local use (allowed: %s)", tld, strings.Join(AllowedTLDs, ", "))
 		}
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -137,17 +194,23 @@ func create(dir string, tlds []string) error {
 	now := time.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber:          randomSerial(),
-		Subject:               pkix.Name{CommonName: "Switchboard Local CA", Organization: []string{"Switchboard"}, OrganizationalUnit: []string{owner()}},
+		Subject:               pkix.Name{CommonName: CAName, Organization: []string{caOrg}, OrganizationalUnit: []string{OwnerTag(currentUID())}},
 		NotBefore:             now.Add(-time.Hour),
 		NotAfter:              now.Add(CAValidity),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 		MaxPathLenZero:        true,
-		// The key can only vouch for names under our TLDs, and never for IPs.
+		// Only TLS server certificates: trust stores and verifiers apply a
+		// CA's EKU to everything it signs, so the key can't sign code or mail.
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		// The key can only vouch for names under our TLDs, and never for IPs,
+		// mail addresses or URIs outside the reserved .invalid.
 		PermittedDNSDomainsCritical: true,
 		PermittedDNSDomains:         slices.Clone(tlds),
 		ExcludedIPRanges:            allIPs(),
+		PermittedEmailAddresses:     []string{"invalid"},
+		PermittedURIDomains:         []string{"invalid"},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
 	if err != nil {
@@ -191,26 +254,82 @@ func Validate(cert *x509.Certificate, now time.Time) error {
 	return ValidateConstraints(cert)
 }
 
-// ValidateConstraints checks that cert is a self-signed CA whose name
-// constraints allow only single-label TLDs and no IP addresses, whatever its
-// dates. The privileged helper refuses to trust anything else.
+// ValidateConstraints checks that cert is a self-signed Switchboard CA that
+// can only sign TLS server certificates for names under TLDs reserved for
+// local use, and no IP addresses, whatever its dates. The privileged helper
+// refuses to trust anything else.
 func ValidateConstraints(cert *x509.Certificate) error {
 	switch {
-	case !cert.BasicConstraintsValid || !cert.IsCA:
-		return errors.New("not a CA certificate")
-	case cert.CheckSignatureFrom(cert) != nil:
-		return errors.New("not self-signed")
+	case !IsSwitchboardCA(cert):
+		return fmt.Errorf("not a self-signed CA named %q", CAName)
+	case cert.MaxPathLen != 0 || !cert.MaxPathLenZero:
+		return errors.New("may sign other CAs")
 	case !cert.PermittedDNSDomainsCritical || len(cert.PermittedDNSDomains) == 0:
 		return errors.New("has no critical DNS name constraints")
 	case !excludesAllIPs(cert.ExcludedIPRanges) || len(cert.PermittedIPRanges) > 0:
 		return errors.New("name constraints do not exclude all IP addresses")
 	}
 	for _, d := range cert.PermittedDNSDomains {
-		if !config.ValidHostname(d) || strings.Contains(d, ".") || strings.HasPrefix(d, "*") {
-			return fmt.Errorf("name constraint %q is not a single-label TLD", d)
+		if !slices.Contains(AllowedTLDs, d) {
+			return fmt.Errorf("name constraint %q is not a TLD reserved for local use", d)
 		}
 	}
+	if !slices.Equal(cert.ExtKeyUsage, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}) || len(cert.UnknownExtKeyUsage) > 0 {
+		return errNoServerAuth
+	}
 	return nil
+}
+
+// ValidateNow is Validate at the current time.
+func ValidateNow(cert *x509.Certificate) error { return Validate(cert, time.Now()) }
+
+// ValidateRemovable checks that cert is a Switchboard CA, which is all that
+// removing it from a trust store needs: expired CAs and CAs from earlier
+// versions must stay removable.
+func ValidateRemovable(cert *x509.Certificate) error {
+	if !IsSwitchboardCA(cert) {
+		return fmt.Errorf("not a self-signed CA named %q", CAName)
+	}
+	return nil
+}
+
+// CheckTrust checks what the privileged helper checks before trusting cert,
+// beyond ValidateNow: that it is the CA the user was shown, by its SHA-256
+// fingerprint, and that it was made by the user with uid (a SID on Windows).
+// Together they stop a process that can write the user's CA file from
+// swapping in its own CA while the user confirms.
+func CheckTrust(cert *x509.Certificate, fingerprint, uid string) error {
+	if fingerprint == "" || !strings.EqualFold(Fingerprint(cert), fingerprint) {
+		return fmt.Errorf("the CA's SHA-256 fingerprint is %s, not %s as shown when you confirmed; run 'sb trust' again", Fingerprint(cert), fingerprint)
+	}
+	if !OwnedBy(cert, uid, "") {
+		return fmt.Errorf("the CA was not made by uid %s (it is tagged %q); run 'sb trust' as that user", uid, strings.Join(cert.Subject.OrganizationalUnit, ","))
+	}
+	return nil
+}
+
+// IsSwitchboardCA reports whether cert is a self-signed CA with Switchboard's
+// subject. Only such certificates are removed from trust stores.
+func IsSwitchboardCA(cert *x509.Certificate) bool {
+	return cert.BasicConstraintsValid && cert.IsCA &&
+		cert.Subject.CommonName == CAName && slices.Equal(cert.Subject.Organization, []string{caOrg}) &&
+		cert.CheckSignatureFrom(cert) == nil
+}
+
+// OwnerTag is the organizational unit of the CAs made by the user with the
+// given uid (a SID on Windows), so each user's CAs can be told apart in the
+// system trust store.
+func OwnerTag(uid string) string { return "uid " + uid }
+
+// OwnedBy reports whether cert is a Switchboard CA made by the user with uid,
+// or, for CAs from earlier versions, which were tagged "login@host", by the
+// user named login.
+func OwnedBy(cert *x509.Certificate, uid, login string) bool {
+	if !IsSwitchboardCA(cert) || len(cert.Subject.OrganizationalUnit) != 1 {
+		return false
+	}
+	ou := cert.Subject.OrganizationalUnit[0]
+	return uid != "" && ou == OwnerTag(uid) || login != "" && strings.HasPrefix(ou, login+"@")
 }
 
 // Permits reports whether the CA's name constraints allow name, which may be
@@ -291,13 +410,10 @@ func randomSerial() *big.Int {
 	return n
 }
 
-// owner names the user and machine the CA belongs to, as trust store UIs show
-// it: "me@laptop".
-func owner() string {
-	name := "unknown"
+// currentUID is the current user's uid, or SID on Windows.
+func currentUID() string {
 	if u, err := user.Current(); err == nil {
-		name = u.Username
+		return u.Uid
 	}
-	host, _ := os.Hostname()
-	return name + "@" + host
+	return strconv.Itoa(os.Getuid())
 }

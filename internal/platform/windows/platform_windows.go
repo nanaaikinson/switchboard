@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/windows"
+
 	"github.com/nanaaikinson/switchboard/internal/pki"
 )
 
@@ -41,9 +43,11 @@ type Options struct {
 	Store RootStore
 }
 
-// RootStore adds and removes certificates in a Windows certificate store.
+// RootStore adds, lists and removes certificates in a Windows certificate
+// store.
 type RootStore interface {
 	Add(cert *x509.Certificate) error
+	List() ([]*x509.Certificate, error)
 	Remove(cert *x509.Certificate) (bool, error)
 }
 
@@ -128,12 +132,16 @@ func (p *Platform) UninstallPlan(tld string) []string {
 
 // TrustPlan lists what TrustCA changes.
 func (p *Platform) TrustPlan(certPath string) []string {
-	return []string{fmt.Sprintf("Add %s to the LocalMachine\\Root certificate store, which Edge, Chrome and Firefox trust", certPath)}
+	return []string{fmt.Sprintf("Add %s to the LocalMachine\\Root certificate store, which Edge, Chrome and Firefox trust, for TLS server certificates only, replacing any older Switchboard CA of yours", certPath)}
 }
 
 // UntrustPlan lists what UntrustCA changes.
 func (p *Platform) UntrustPlan(certPath string) []string {
-	return []string{fmt.Sprintf("Remove %s from the LocalMachine\\Root certificate store", certPath)}
+	what := "every Switchboard CA of yours"
+	if certPath != "" {
+		what = certPath + " and any older Switchboard CA of yours"
+	}
+	return []string{fmt.Sprintf("Remove %s from the LocalMachine\\Root certificate store", what)}
 }
 
 // InstallResolver adds the NRPT rule for tld. NRPT names DNS servers by IP
@@ -201,11 +209,24 @@ func (p *Platform) RestartDaemon() (bool, error) {
 	return !strings.Contains(out, "GONE"), nil
 }
 
-// TrustCA adds the CA to LocalMachine\Root. Privileged (UAC).
-func (p *Platform) TrustCA(certPath string) error {
-	cert, err := readCA(certPath, true)
+// TrustCA adds the CA to LocalMachine\Root, trusted for TLS server
+// authentication only, after removing the user's older Switchboard CAs.
+// Privileged (UAC). Only a Switchboard CA made by this user with the
+// fingerprint the user confirmed is trusted.
+func (p *Platform) TrustCA(certPath, fingerprint string) error {
+	cert, err := readCA(certPath, pki.ValidateNow)
 	if err != nil {
 		return fmt.Errorf("trust CA: %w", err)
+	}
+	sid, err := p.sid()
+	if err != nil {
+		return fmt.Errorf("trust CA: %w", err)
+	}
+	if err := pki.CheckTrust(cert, fingerprint, sid); err != nil {
+		return fmt.Errorf("trust CA: %w", err)
+	}
+	if err := p.removeCAs(func(c *x509.Certificate) bool { return !c.Equal(cert) && p.owns(c, sid) }); err != nil {
+		return fmt.Errorf("trust CA: remove older Switchboard CAs: %w", err)
 	}
 	if err := p.o.Store.Add(cert); err != nil {
 		return fmt.Errorf("trust CA in LocalMachine\\Root: %w", err)
@@ -213,14 +234,44 @@ func (p *Platform) TrustCA(certPath string) error {
 	return nil
 }
 
-// UntrustCA removes the CA from LocalMachine\Root. Privileged (UAC).
+// UntrustCA removes every Switchboard CA this user made from
+// LocalMachine\Root, and the CA at certPath if given. Privileged (UAC).
 func (p *Platform) UntrustCA(certPath string) error {
-	cert, err := readCA(certPath, false)
+	var given *x509.Certificate
+	if certPath != "" {
+		c, err := readCA(certPath, pki.ValidateRemovable) // an expired or older CA must still be removable
+		if err != nil {
+			return fmt.Errorf("untrust CA: %w", err)
+		}
+		given = c
+	}
+	sid, err := p.sid()
 	if err != nil {
 		return fmt.Errorf("untrust CA: %w", err)
 	}
-	if _, err := p.o.Store.Remove(cert); err != nil {
+	if err := p.removeCAs(func(c *x509.Certificate) bool { return p.owns(c, sid) || given != nil && c.Equal(given) }); err != nil {
 		return fmt.Errorf("untrust CA in LocalMachine\\Root: %w", err)
+	}
+	return nil
+}
+
+// owns reports whether c is a Switchboard CA made by the user with sid.
+func (p *Platform) owns(c *x509.Certificate, sid string) bool {
+	return pki.OwnedBy(c, sid, p.o.User)
+}
+
+// removeCAs removes the Switchboard CAs in LocalMachine\Root that match.
+func (p *Platform) removeCAs(match func(*x509.Certificate) bool) error {
+	certs, err := p.o.Store.List()
+	if err != nil {
+		return err
+	}
+	for _, c := range certs {
+		if pki.IsSwitchboardCA(c) && match(c) {
+			if _, err := p.o.Store.Remove(c); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -327,24 +378,31 @@ func (p *Platform) PortOwner(_ context.Context, port int) (string, error) {
 	return describeHTTPSys(QueuesOnPort(parseServiceState(string(state)), port), port), nil
 }
 
-// readCA reads and validates the CA certificate. It refuses symbolic links,
-// since it runs elevated on a path in the user's profile.
-func readCA(path string, current bool) (*x509.Certificate, error) {
+// readCA reads the CA certificate and checks it with validate. It runs
+// elevated on a path in the user's profile, so it opens the file itself, never
+// a link or junction there, even one swapped in at the last moment.
+func readCA(path string, validate func(*x509.Certificate) error) (*x509.Certificate, error) {
 	if !filepath.IsAbs(path) {
 		return nil, fmt.Errorf("CA path %q is not absolute", path)
 	}
-	fi, err := os.Lstat(path)
+	name, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, err
 	}
-	if !fi.Mode().IsRegular() {
+	h, err := windows.CreateFile(name, windows.GENERIC_READ, windows.FILE_SHARE_READ, nil,
+		windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	f := os.NewFile(uintptr(h), path)
+	defer f.Close()
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(h, &info); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if info.FileAttributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DIRECTORY) != 0 {
 		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
-	f, err := os.Open(path) //nolint:gosec // G304: validated above
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
 	data, err := io.ReadAll(io.LimitReader(f, 64<<10))
 	if err != nil {
 		return nil, err
@@ -352,10 +410,6 @@ func readCA(path string, current bool) (*x509.Certificate, error) {
 	cert, err := pki.ParseCert(data)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	validate := pki.ValidateConstraints
-	if current {
-		validate = func(c *x509.Certificate) error { return pki.Validate(c, time.Now()) }
 	}
 	if err := validate(cert); err != nil {
 		return nil, fmt.Errorf("%s is not a Switchboard CA: %w", path, err)

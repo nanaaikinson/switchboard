@@ -12,15 +12,29 @@ The CA is created the first time `sb daemon`, `sb setup` or `sb trust` needs it.
 | --- | --- |
 | Key | ECDSA P-256 |
 | Validity | 10 years |
-| Subject | `CN=Switchboard Local CA, O=Switchboard, OU=<user>@<host>` |
+| Subject | `CN=Switchboard Local CA, O=Switchboard, OU=uid <uid>` (a SID on Windows) |
 | Basic constraints | CA, path length 0: it can sign leaf certificates only, never another CA |
-| Name constraints (critical) | permitted DNS: each TLD (`test`); excluded IP: `0.0.0.0/0` and `::/0` |
+| Extended key usage | TLS server authentication only |
+| Name constraints (critical) | permitted DNS: each TLD (`test`); excluded IP: `0.0.0.0/0` and `::/0`; permitted email and URI: `invalid` only |
 
-**Name constraints are the main safeguard.** If the key were stolen, it still couldn't
-issue a certificate that browsers accept for `google.com` or an IP address. A
-certificate for `google.com` signed with the key fails verification with "not
-authorized to sign for this name". The TLDs are fixed when the CA is created. To add a
-TLD later, make a new CA (see below).
+**Name constraints and the key usage are the main safeguards.** If the key were stolen,
+it still couldn't issue a certificate that browsers accept for `google.com` or an IP
+address: one signed with the key fails verification with "not authorized to sign for
+this name". And because the CA itself is limited to TLS server authentication, which
+verifiers apply to everything below it, the key can't sign code (Authenticode), mail
+(S/MIME) or client certificates either. The TLDs are fixed when the CA is created, and
+only TLDs reserved for local use are allowed: `test`, `local`, `localhost`, `internal`,
+`example` and `invalid`. To add a TLD later, make a new CA (see below).
+
+The `OU` names the user who made the CA. The helper only trusts a CA tagged with the
+user it runs for, and removing trust finds that user's CAs in the system store by it,
+so a deleted or replaced `ca.pem` can't leave a CA trusted.
+
+CAs made by earlier versions have no extended key usage and are tagged
+`OU=<login>@<host>`. They keep working, but `sb doctor` flags them, and the next
+`sb trust` or `sb setup` replaces them: it makes a new CA, has the helper trust it and
+remove the old one from the system store, moves your NSS stores over, and restarts the
+daemon.
 
 ### Files
 
@@ -72,13 +86,20 @@ Go and most CLI tools use the system bundle, while Chrome and Firefox use NSS. T
 certificate before trusting it; see the security design in
 [setup-macos.md](setup-macos.md).
 
+On Linux the anchor file is named `switchboard-<serial in hex>`, never after the
+certificate's subject. On Windows the certificate's store entry is also limited to
+server authentication (`CERT_ENHKEY_USAGE_PROP_ID`). Trusting a CA first removes the
+user's older Switchboard CAs from the system store; removing trust removes all of
+them, whether or not their files still exist.
+
 `sb untrust` removes trust but keeps the CA files, so `sb trust` restores the same CA.
 On Windows, `sb trust` and `sb untrust` go through one UAC prompt instead of `sudo`.
 
 ## Making a new CA
 
-There's no automatic rotation yet. To replace the CA (because the TLDs changed, it's
-near expiry, or you think the key leaked):
+CAs from earlier versions are replaced automatically by `sb trust` (see above).
+Otherwise, to replace the CA (because the TLDs changed, it's near expiry, or you think
+the key leaked):
 
 ```bash
 sb untrust
@@ -92,6 +113,7 @@ are reissued automatically.
 
 `sb doctor` has two HTTPS checks:
 
-- `local CA`: the CA loads, covers every TLD, and has more than 90 days left.
+- `local CA`: the CA loads, covers every TLD, is limited to TLS server certificates, and
+  has more than 90 days left.
 - `https probe.<tld>`: a real TLS handshake with the HTTPS proxy, verified against the
   system trust store.

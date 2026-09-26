@@ -95,3 +95,20 @@ func longPath(path string) (string, error) {
 	}
 	return windows.UTF16ToString(buf[:n]), nil
 }
+
+// checkUserSID checks that sid is the SID of the account named user. The
+// elevated helper can run as another (admin) account, so it takes the user's
+// SID from the unelevated side and checks it against the name.
+func checkUserSID(user, sid string) error {
+	if user == "" || sid == "" {
+		return errors.New("--user and --sid name the user; use 'sb setup' or 'sb uninstall' instead")
+	}
+	got, _, _, err := windows.LookupSID("", user)
+	if err != nil {
+		return fmt.Errorf("look up %s: %w", user, err)
+	}
+	if !strings.EqualFold(got.String(), sid) {
+		return fmt.Errorf("--sid %s is not the SID of %s (%s)", sid, user, got)
+	}
+	return nil
+}

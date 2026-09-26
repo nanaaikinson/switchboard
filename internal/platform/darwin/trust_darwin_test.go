@@ -13,11 +13,14 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/nanaaikinson/switchboard/internal/pki"
+	"github.com/nanaaikinson/switchboard/internal/pki/pkitest"
 )
 
 func testCA(t *testing.T) *pki.CA {
@@ -29,15 +32,66 @@ func testCA(t *testing.T) *pki.CA {
 	return ca
 }
 
+// keychain fakes the security tool over a set of certificates in the System
+// keychain.
+type keychain struct {
+	t     *testing.T
+	certs []*x509.Certificate
+	calls []string
+}
+
+func (k *keychain) run(name string, args ...string) ([]byte, error) {
+	if name != "security" {
+		k.t.Fatalf("ran %s", name)
+	}
+	k.calls = append(k.calls, strings.Join(args, " "))
+	switch args[0] {
+	case "find-certificate":
+		var out []byte
+		for _, c := range k.certs {
+			out = append(out, pkitest.PEM(c)...)
+		}
+		if len(out) == 0 {
+			return []byte("security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain."), errors.New("exit status 44")
+		}
+		return out, nil
+	case "delete-certificate":
+		for i, c := range k.certs {
+			sum := sha1.Sum(c.Raw)
+			if strings.EqualFold(hex.EncodeToString(sum[:]), args[2]) {
+				k.certs = append(k.certs[:i], k.certs[i+1:]...)
+				return nil, nil
+			}
+		}
+		return []byte("not found"), errors.New("exit status 44")
+	}
+	return nil, nil
+}
+
+func (k *keychain) has(c *x509.Certificate) bool {
+	return slices.ContainsFunc(k.certs, c.Equal)
+}
+
 func TestTrustCA(t *testing.T) {
 	ca := testCA(t)
+	uid := os.Getuid()
 	var trusted []*x509.Certificate
-	p := New(Options{Trust: func(c *x509.Certificate) error { trusted = append(trusted, c); return nil }})
-	if err := p.TrustCA(ca.CertPath()); err != nil {
+	older := pkitest.CA(t, strconv.Itoa(uid), nil)
+	legacy := pkitest.CA(t, "", func(c *x509.Certificate) {
+		c.ExtKeyUsage = nil
+		c.Subject.OrganizationalUnit = []string{"me@laptop"}
+	})
+	others := pkitest.CA(t, strconv.Itoa(uid+1), nil)
+	k := &keychain{t: t, certs: []*x509.Certificate{older, legacy, others}}
+	p := New(Options{UID: uid, User: "me", Run: k.run, Trust: func(c *x509.Certificate) error { trusted = append(trusted, c); return nil }})
+	if err := p.TrustCA(ca.CertPath(), ca.Fingerprint()); err != nil {
 		t.Fatal(err)
 	}
 	if len(trusted) != 1 || !trusted[0].Equal(ca.Cert) {
 		t.Fatalf("trusted %v", trusted)
+	}
+	if k.has(older) || k.has(legacy) || !k.has(others) {
+		t.Errorf("older CAs of this user should be removed first, another user's kept: calls %q", k.calls)
 	}
 
 	link := filepath.Join(t.TempDir(), "link.pem")
@@ -54,11 +108,20 @@ func TestTrustCA(t *testing.T) {
 	if err := os.WriteFile(evil, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for name, path := range map[string]string{
-		"symlink": link, "unconstrained": evil, "relative": "ca.pem",
-		"missing": filepath.Join(t.TempDir(), "none.pem"), "directory": t.TempDir(),
+	dotCom := pkitest.CA(t, strconv.Itoa(uid), func(c *x509.Certificate) { c.PermittedDNSDomains = []string{"com"} })
+	for name, tc := range map[string]struct{ path, fp string }{
+		"symlink":        {link, ca.Fingerprint()},
+		"unconstrained":  {evil, ca.Fingerprint()},
+		"relative":       {"ca.pem", ca.Fingerprint()},
+		"missing":        {filepath.Join(t.TempDir(), "none.pem"), ca.Fingerprint()},
+		"directory":      {t.TempDir(), ca.Fingerprint()},
+		"swapped":        {pkitest.Write(t, older), ca.Fingerprint()},
+		"no fingerprint": {ca.CertPath(), ""},
+		"legacy":         {pkitest.Write(t, legacy), pki.Fingerprint(legacy)},
+		"public TLD":     {pkitest.Write(t, dotCom), pki.Fingerprint(dotCom)},
+		"another user's": {pkitest.Write(t, others), pki.Fingerprint(others)},
 	} {
-		if err := p.TrustCA(path); err == nil {
+		if err := p.TrustCA(tc.path, tc.fp); err == nil {
 			t.Errorf("%s: trusted", name)
 		}
 	}
@@ -66,62 +129,63 @@ func TestTrustCA(t *testing.T) {
 		t.Errorf("trust store called for rejected files: %d calls", len(trusted))
 	}
 
-	p = New(Options{Trust: func(*x509.Certificate) error { return errors.New("denied") }})
-	if err := p.TrustCA(ca.CertPath()); err == nil || !strings.Contains(err.Error(), "denied") || !strings.Contains(err.Error(), "logged-in Terminal") {
+	p = New(Options{UID: uid, Run: (&keychain{t: t}).run, Trust: func(*x509.Certificate) error { return errors.New("denied") }})
+	if err := p.TrustCA(ca.CertPath(), ca.Fingerprint()); err == nil || !strings.Contains(err.Error(), "denied") || !strings.Contains(err.Error(), "logged-in Terminal") {
 		t.Errorf("err = %v", err)
 	}
 }
 
 func TestUntrustCA(t *testing.T) {
 	ca := testCA(t)
-	sum := sha1.Sum(ca.Cert.Raw)
-	hash := strings.ToUpper(hex.EncodeToString(sum[:]))
+	uid := os.Getuid()
+	older := pkitest.CA(t, strconv.Itoa(uid), nil)
+	legacy := pkitest.CA(t, "", func(c *x509.Certificate) {
+		c.ExtKeyUsage = nil
+		c.Subject.OrganizationalUnit = []string{"me@laptop"}
+	})
+	others := pkitest.CA(t, strconv.Itoa(uid+1), nil)
+	notOurs := pkitest.CA(t, strconv.Itoa(uid), func(c *x509.Certificate) { c.Subject.CommonName = "Switchboard Local CA (not)" })
 	for _, tc := range []struct {
-		name      string
-		present   bool
-		removeOut string
-		wantCalls []string
+		name     string
+		certPath string
+		certs    []*x509.Certificate
+		keep     []*x509.Certificate
+		removals int
 	}{
-		{name: "not in keychain", wantCalls: []string{"find-certificate"}},
-		{name: "present", present: true, wantCalls: []string{"find-certificate", "remove-trusted-cert", "delete-certificate -Z " + hash + " " + systemKeychain}},
-		{name: "trust already gone", present: true, removeOut: "SecTrustSettingsRemoveTrustSettings: The specified item could not be found in the keychain.",
-			wantCalls: []string{"find-certificate", "remove-trusted-cert", "delete-certificate"}},
+		{name: "nothing in keychain", certPath: ca.CertPath()},
+		{name: "present", certPath: ca.CertPath(), certs: []*x509.Certificate{ca.Cert}, removals: 1},
+		{name: "CA file gone", certs: []*x509.Certificate{ca.Cert, older, legacy, others, notOurs}, keep: []*x509.Certificate{others, notOurs}, removals: 3},
+		{name: "another user's file", certPath: pkitest.Write(t, others), certs: []*x509.Certificate{others}, removals: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var calls []string
-			p := New(Options{Run: func(name string, args ...string) ([]byte, error) {
-				if name != "security" {
-					t.Fatalf("ran %s", name)
-				}
-				calls = append(calls, strings.Join(args, " "))
-				switch args[0] {
-				case "find-certificate":
-					if tc.present {
-						return []byte("SHA-1 hash: 0000\nSHA-1 hash: " + hash + "\n"), nil
-					}
-					return []byte("SHA-1 hash: 0000\n"), nil
-				case "remove-trusted-cert":
-					if args[2] == ca.CertPath() {
-						t.Error("security was given the user's path, not a validated copy")
-					}
-					if tc.removeOut != "" {
-						return []byte(tc.removeOut), errors.New("exit status 1")
-					}
-				}
-				return nil, nil
-			}})
-			if err := p.UntrustCA(ca.CertPath()); err != nil {
+			k := &keychain{t: t, certs: slices.Clone(tc.certs)}
+			p := New(Options{UID: uid, User: "me", Run: k.run})
+			if err := p.UntrustCA(tc.certPath); err != nil {
 				t.Fatal(err)
 			}
-			if len(calls) != len(tc.wantCalls) {
-				t.Fatalf("calls %q, want %q", calls, tc.wantCalls)
+			var removed int
+			for _, c := range k.calls {
+				if strings.HasPrefix(c, "remove-trusted-cert -d ") {
+					removed++
+					if strings.HasSuffix(c, tc.certPath) && tc.certPath != "" {
+						t.Error("security was given the user's path, not a copy")
+					}
+				}
 			}
-			for i, want := range tc.wantCalls {
-				if !strings.HasPrefix(calls[i], want) {
-					t.Errorf("call %d = %q, want prefix %q", i, calls[i], want)
+			if removed != tc.removals || len(k.certs) != len(tc.keep) {
+				t.Errorf("removed %d (want %d), left %d (want %d): calls %q", removed, tc.removals, len(k.certs), len(tc.keep), k.calls)
+			}
+			for _, c := range tc.keep {
+				if !k.has(c) {
+					t.Errorf("removed %v", c.Subject)
 				}
 			}
 		})
+	}
+
+	k := &keychain{t: t}
+	if err := New(Options{UID: uid, Run: k.run}).UntrustCA(pkitest.Write(t, notOurs)); err == nil {
+		t.Error("untrusted a CA that isn't Switchboard's")
 	}
 }
 

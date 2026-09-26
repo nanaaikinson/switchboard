@@ -56,10 +56,17 @@ tools also write `nameserver 127.0.0.1` files, and those are never removed. If
   accepts connections itself. `sb helper install` and `sb helper uninstall` write and
   remove only the files listed above. `sb helper trust` and `sb helper untrust` only
   change the CA's entry in the System keychain.
-- **Root only trusts a constrained CA.** `sb helper trust` opens the certificate without
-  following symlinks and refuses anything that isn't a self-signed CA whose critical
-  name constraints allow only single-label TLDs and exclude every IP address. So even a
-  tampered file in your config dir can't make root trust a CA for real domains.
+- **Root only trusts a constrained CA, and only the one you confirmed.** `sb helper
+  trust` opens the certificate without following symlinks and refuses anything that
+  isn't a self-signed Switchboard CA limited to TLS server certificates, whose critical
+  name constraints allow only TLDs reserved for local use (`.test`, `.local`, ...) and
+  exclude every IP address. It must also carry your uid and have the SHA-256
+  fingerprint `sb trust` showed you (passed as `--ca-fingerprint`). So a process that
+  swaps the file in your config dir while you confirm can't make root trust its CA,
+  let alone one for real domains.
+- **Root's temp files go in `/tmp`.** The helper sets `TMPDIR=/tmp` (sticky, so no one
+  else can replace its files) before writing the copies of the certificate that
+  `security` reads.
 - **Trust changes run in your Terminal, not in launchd.** macOS asks for approval before
   changing admin trust settings, and refuses without a user session. That's why
   trusting goes through `sudo sb helper trust`, like setup, and not through the helper's

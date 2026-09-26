@@ -39,6 +39,7 @@ const DefaultHelperSocket = helperSockDir + "/helper.sock"
 // ran `sb setup`; the rest exist for tests.
 type Options struct {
 	UID    int
+	User   string // login name; "" looks it up from UID
 	Home   string
 	SbPath string
 

@@ -6,6 +6,8 @@ import (
 	"crypto/x509"
 	"fmt"
 	"path/filepath"
+
+	"github.com/nanaaikinson/switchboard/internal/pki"
 )
 
 // NSSStore is the part of truststore.NSSTrust Switchboard uses.
@@ -28,7 +30,7 @@ type NSS struct {
 // Trust adds the CA at certPath. It is a no-op when there are no NSS
 // databases or the CA is already there.
 func (n NSS) Trust(certPath string) error {
-	cert, err := ReadCA(certPath, true)
+	cert, err := ReadCA(certPath, pki.ValidateNow)
 	if err != nil {
 		return fmt.Errorf("trust CA in NSS: %w", err)
 	}
@@ -50,7 +52,7 @@ func (n NSS) Trust(certPath string) error {
 
 // Untrust removes the CA at certPath.
 func (n NSS) Untrust(certPath string) error {
-	cert, err := ReadCA(certPath, false)
+	cert, err := ReadCA(certPath, pki.ValidateRemovable)
 	if err != nil {
 		return fmt.Errorf("untrust CA in NSS: %w", err)
 	}
