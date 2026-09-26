@@ -291,7 +291,10 @@ minisign -Vm SHA256SUMS -P <release public key>
 gh attestation verify sb_0.1.0_darwin_arm64.tar.gz --repo nanaaikinson/switchboard
 ```
 
-`gh attestation verify` works only for releases built while the repository was public.
+The `minisign` line prints the signature's trusted comment, which must read
+`switchboard <tag> SHA256SUMS` for the release you downloaded; install.sh and
+install.ps1 check the same. `gh attestation verify` works only for releases built while
+the repository was public.
 
 ## Versioning rules
 

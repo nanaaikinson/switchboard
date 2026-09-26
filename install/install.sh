@@ -1,19 +1,26 @@
 #!/bin/sh
 # Install sb, the Switchboard CLI, from GitHub Releases.
 #
-#   curl -fsSL https://raw.githubusercontent.com/nanaaikinson/switchboard/main/install/install.sh | sh
-#   curl -fsSL .../install.sh | sh -s -- --global     # /usr/local/bin instead of ~/.local/bin
-#   curl -fsSL .../install.sh | SB_VERSION=v0.1.0 sh  # pin a version
+#   curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/nanaaikinson/switchboard/main/install/install.sh | sh
+#   curl --proto '=https' --tlsv1.2 -fsSL .../install.sh | sh -s -- --global     # /usr/local/bin instead of ~/.local/bin
+#   curl --proto '=https' --tlsv1.2 -fsSL .../install.sh | SB_VERSION=v0.1.0 sh  # pin a version
 #
-# The archive is checked against the release's SHA256SUMS. If minisign is
-# installed, SHA256SUMS is also checked against its signature. This script
-# only makes system changes (sudo) for --global when /usr/local/bin is not
-# writable; everything else is done by 'sb setup' afterwards.
+# The archive is checked against the release's SHA256SUMS, and SHA256SUMS
+# against its minisign signature with the key below, which needs minisign.
+# This script only makes system changes (sudo) for --global when
+# /usr/local/bin is not writable; everything else is done by 'sb setup'
+# afterwards.
 set -eu
 
 REPO="nanaaikinson/switchboard"
-# Public key that signs SHA256SUMS (SHA256SUMS.minisig). Empty until releases
-# are signed; the signature check is skipped while it is empty.
+# The release key that signs SHA256SUMS (SHA256SUMS.minisig): the "RW..." line
+# of its .pub file, the same value as the SB_UPDATE_PUBLIC_KEY repository
+# variable. Keep it the same as $SbMinisignPubkey in install.ps1.
+#
+# Empty until the release key exists (docs/backlog.md). While it's empty, only
+# the checksum is verified, with a warning. Once it's set, a release whose
+# signature is missing or invalid is refused, and so is installing without
+# minisign, unless SB_INSECURE_SKIP_SIGNATURE=1.
 MINISIGN_PUBKEY=""
 
 say() { printf 'sb-install: %s\n' "$*"; }
@@ -34,18 +41,23 @@ Options:
   -h, --help show this help
 
 Environment:
-  SB_VERSION  release tag to install, e.g. v0.1.0 (default: latest release)
+  SB_VERSION                    release tag to install, e.g. v0.1.0 (default: latest release)
+  SB_INSECURE_SKIP_SIGNATURE=1  install without minisign, so without checking the
+                                release signature (not recommended)
 EOF
 }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# download URL FILE
+# download URL FILE. curl refuses anything but HTTPS, redirects included.
+# wget has no such option (its --https-only only applies to recursive
+# downloads), so it could follow a redirect to plain HTTP; the checksum and
+# signature checks below are what protect a wget download.
 download() {
 	if have curl; then
-		curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o "$2" "$1"
+		curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 -o "$2" "$1"
 	elif have wget; then
-		wget -q --https-only -O "$2" "$1"
+		wget -q -O "$2" "$1"
 	else
 		die "need curl or wget to download sb; install one and re-run"
 	fi
@@ -94,19 +106,29 @@ sha256() {
 	fi
 }
 
+# verify_signature checks SHA256SUMS against SHA256SUMS.minisig, and that the
+# signature's trusted comment, which is signed too, names this release, so an
+# older release's signed SHA256SUMS can't be passed off as this one's.
 verify_signature() {
-	if ! have minisign; then
-		say "minisign not found; skipping signature check (checksum is still verified)"
+	if [ -z "$MINISIGN_PUBKEY" ]; then
+		warn "this release is NOT signature-verified: this script has no release signing key yet. Only the SHA-256 checksum is checked, which catches a corrupt download but not a tampered release"
 		return
 	fi
-	if [ -z "$MINISIGN_PUBKEY" ]; then
-		say "releases are not signed yet; skipping signature check (checksum is still verified)"
-		return
+	if ! have minisign; then
+		if [ "${SB_INSECURE_SKIP_SIGNATURE:-}" = 1 ]; then
+			warn "SB_INSECURE_SKIP_SIGNATURE=1: NOT checking the release signature. Only the SHA-256 checksum is checked, so a tampered release would be installed"
+			return
+		fi
+		die "minisign is needed to verify the release signature. Install it (brew install minisign, apt install minisign, dnf install minisign, or see https://jedisct1.github.io/minisign/) and re-run. To install without checking the signature, re-run with SB_INSECURE_SKIP_SIGNATURE=1 (not recommended)"
 	fi
 	download "$base/SHA256SUMS.minisig" "$tmp/SHA256SUMS.minisig" ||
 		die "could not download SHA256SUMS.minisig for $version; refusing to install unsigned files"
-	minisign -Vqm "$tmp/SHA256SUMS" -x "$tmp/SHA256SUMS.minisig" -P "$MINISIGN_PUBKEY" ||
+	# -Q prints only the trusted comment.
+	comment=$(minisign -V -Q -m "$tmp/SHA256SUMS" -x "$tmp/SHA256SUMS.minisig" -P "$MINISIGN_PUBKEY") ||
 		die "SHA256SUMS signature is invalid; the release may have been tampered with. Do not install it"
+	want="switchboard $version SHA256SUMS"
+	[ "$comment" = "$want" ] ||
+		die "SHA256SUMS.minisig is signed as '$comment', not '$want', so it belongs to another release. Do not install it"
 	say "verified SHA256SUMS signature"
 }
 
