@@ -5,7 +5,15 @@ The daemon (`sb daemon`) serves a JSON API over HTTP on a Unix socket at
 GUI use this API. They never edit the config file or system files directly.
 
 - **Access:** the socket has mode `0600`, so only the user who runs the daemon can
-  connect. There is no other authentication.
+  connect. There is no other authentication. It is created in a private temporary
+  directory, chmodded, then moved into place, so it never exists with looser
+  permissions.
+- **Trusting the socket:** whoever can write to the socket's directory could replace the
+  socket and pose as the daemon, which hands out dashboard sign-in links. So the daemon
+  refuses to start, and the CLI refuses to connect, unless the directory (and the
+  target, if it is a symlink) belongs to you and no other user can write to it; the CLI
+  also requires the socket itself to be yours. The error says what to do: `chmod 700
+  <dir>`, or point `SWITCHBOARD_CONFIG_DIR` at a directory of your own.
 - **One daemon at a time:** if a live daemon already owns the socket, a second daemon
   exits with an error. If the file is only left over from a crash, it is replaced.
 - **Windows:** a named pipe, `\\.\pipe\switchboard-<id>`, instead of the socket. `<id>`

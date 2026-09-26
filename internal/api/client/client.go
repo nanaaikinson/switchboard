@@ -148,6 +148,10 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) (int,
 		if errors.Is(err, errNoDaemon) || errors.As(err, &opErr) && opErr.Op == "dial" {
 			return 0, fmt.Errorf("%w (no daemon on %s); start it with 'sb daemon'", ErrDaemonNotRunning, c.socket)
 		}
+		var uerr *url.Error
+		if untrusted(err) && errors.As(err, &uerr) {
+			return 0, uerr.Err // already says what's wrong and what to do
+		}
 		return 0, fmt.Errorf("%s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
