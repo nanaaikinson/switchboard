@@ -134,3 +134,37 @@ func TestBuildTrayManifest(t *testing.T) {
 		t.Error("tampered bundle accepted")
 	}
 }
+
+func TestCheckSignedTrayManifest(t *testing.T) {
+	if got := TrayManifestComment("stable", "1.4.0"); got != "switchboard-tray stable 1.4.0" {
+		t.Fatalf("comment %q; the tray app (signed_manifest.rs) expects the same", got)
+	}
+	k, other := newKey(t), newKey(t)
+	body := []byte(`{"version":"1.4.0","rollout_percent":100,"platforms":{"darwin-aarch64":{"signature":"x","url":"https://e/a"}}}`)
+	pre := []byte(`{"version":"1.5.0-rc.1","rollout_percent":100,"platforms":{}}`)
+	for name, tc := range map[string]struct {
+		body    []byte
+		sig     []byte
+		channel string
+		why     string // "" means it verifies
+	}{
+		"signed for its channel and version": {body, k.sign(body, "switchboard-tray stable 1.4.0", false), "stable", ""},
+		"the same manifest on beta":          {body, k.sign(body, "switchboard-tray beta 1.4.0", false), "beta", ""},
+		"a beta pre-release":                 {pre, k.sign(pre, "switchboard-tray beta 1.5.0-rc.1", false), "beta", ""},
+		"signed for beta, served as stable":  {body, k.sign(body, "switchboard-tray beta 1.4.0", false), "stable", `signed as "switchboard-tray beta 1.4.0"`},
+		"signed for another version":         {body, k.sign(body, "switchboard-tray stable 1.3.0", false), "stable", `not "switchboard-tray stable 1.4.0"`},
+		"Tauri's bundle comment":             {body, k.sign(body, "timestamp:1\tfile:x", false), "stable", "signed as"},
+		"changed after signing":              {[]byte(strings.Replace(string(body), "1.4.0", "9.0.0", 1)), k.sign(body, "switchboard-tray stable 1.4.0", false), "stable", "doesn't match its signature"},
+		"another key":                        {body, other.sign(body, "switchboard-tray stable 1.4.0", false), "stable", "not the update key"},
+		"no signature":                       {body, nil, "stable", "has no signature"},
+		"a pre-release on stable":            {pre, k.sign(pre, "switchboard-tray stable 1.5.0-rc.1", false), "stable", "stable channel offers pre-release"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeSigned(t, t.TempDir(), "stable.json", tc.body, tc.sig, ".minisig")
+			_, err := CheckSignedTrayManifest(k.pub, tc.channel, path)
+			if tc.why == "" && err != nil || tc.why != "" && (err == nil || !strings.Contains(err.Error(), tc.why)) {
+				t.Errorf("err = %v, want %q", err, tc.why)
+			}
+		})
+	}
+}

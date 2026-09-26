@@ -5,9 +5,12 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_opener::OpenerExt;
 
-use crate::{daemon, rollout, version};
+use crate::{daemon, rollout, signed_manifest, version};
 
 const RELEASES_API: &str = "https://api.github.com/repos/nanaaikinson/switchboard/releases/latest";
+/// Release pages "Check for Updates" may open; anything else in the GitHub
+/// API's answer is ignored.
+const RELEASES_PAGE: &str = "https://github.com/nanaaikinson/switchboard/releases";
 
 pub fn error_dialog(app: &AppHandle, msg: &str) {
     app.dialog()
@@ -161,8 +164,9 @@ pub fn applescript_string(s: &str) -> String {
 }
 
 /// Checks for a newer version of the app. With an updater key configured, it
-/// uses the signed Tauri updater manifest on the update host and can install
-/// and restart; without one it can only point to the latest GitHub release.
+/// uses the Tauri updater manifest on the update host, checks the manifest's
+/// own signature (signed_manifest), and can install and restart; without one
+/// it can only point to the latest GitHub release.
 pub async fn check_for_updates(app: &AppHandle) {
     if updater_pubkey(app).is_none() {
         return check_github_release(app).await;
@@ -178,11 +182,64 @@ fn updater_pubkey(app: &AppHandle) -> Option<String> {
     cfg.get("pubkey")?.as_str().filter(|k| !k.is_empty()).map(str::to_owned)
 }
 
+/// The updater plugin's first endpoint, e.g. .../tray/stable.json.
+fn updater_endpoint(app: &AppHandle) -> Option<String> {
+    let cfg = app.config().plugins.0.get("updater")?;
+    cfg.get("endpoints")?.get(0)?.as_str().map(str::to_owned)
+}
+
+/// A client that only speaks HTTPS, redirects included.
+fn https_client(current: &str) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent(format!("switchboard-tray/{current}"))
+        .timeout(std::time::Duration::from_secs(30))
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.url().scheme() != "https" {
+                attempt.error("refusing a redirect away from https")
+            } else if attempt.previous().len() >= 10 {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+async fn fetch(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+    let res = client.get(url).send().await.map_err(|e| e.to_string())?;
+    if !res.status().is_success() {
+        return Err(format!("{url} answered {}", res.status()));
+    }
+    Ok(res.bytes().await.map_err(|e| e.to_string())?.to_vec())
+}
+
+/// Fetches the channel's manifest and its .minisig, and verifies them with the
+/// updater's own public key, before Tauri is asked anything. Tauri then checks
+/// that exact endpoint, and its answer must be the verified manifest, so the
+/// version it installs is one the release key signed for this channel.
 async fn check_signed_update(app: &AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
     let current = app.package_info().version.to_string();
+    let pubkey = updater_pubkey(app).ok_or("this build has no updater key")?;
+    let endpoint = updater_endpoint(app).ok_or("this build has no update endpoint")?;
+    let channel =
+        signed_manifest::channel(&endpoint).ok_or_else(|| format!("can't tell the update channel from {endpoint}"))?;
+    let pk = signed_manifest::public_key(&pubkey)?;
+    let client = https_client(&current)?;
+    let manifest = fetch(&client, &endpoint).await?;
+    let sig = fetch(&client, &format!("{endpoint}.minisig")).await?;
+    let sig = String::from_utf8(sig).map_err(|_| "the update manifest's signature isn't text".to_string())?;
+    let signed =
+        signed_manifest::verify(&pk, channel, &manifest, &sig).map_err(|e| format!("{e}. Nothing was installed."))?;
+
+    let url: tauri::Url = endpoint.parse().map_err(|e| format!("{endpoint}: {e}"))?;
     let update = app
-        .updater()
+        .updater_builder()
+        .endpoints(vec![url])
+        .map_err(|e| e.to_string())?
+        .build()
         .map_err(|e| e.to_string())?
         .check()
         .await
@@ -191,9 +248,10 @@ async fn check_signed_update(app: &AppHandle) -> Result<(), String> {
         info_dialog(app, &format!("You're up to date (v{current})."));
         return Ok(());
     };
+    signed_manifest::matches(&signed, &update.raw_json, &update.version)
+        .map_err(|e| format!("{e}. Nothing was installed; try again later."))?;
     // Staged rollout, decided exactly as sb self-update does.
-    let percent = update
-        .raw_json
+    let percent = signed
         .get("rollout_percent")
         .and_then(|v| v.as_u64())
         .unwrap_or(100)
@@ -256,10 +314,7 @@ async fn check_github_release(app: &AppHandle) {
         }
         let v: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
         let tag = v["tag_name"].as_str().ok_or("no tag_name in the release")?.to_owned();
-        let url = v["html_url"]
-            .as_str()
-            .unwrap_or("https://github.com/nanaaikinson/switchboard/releases")
-            .to_owned();
+        let url = release_page(v["html_url"].as_str());
         Ok::<_, String>((tag, url))
     }
     .await;
@@ -281,9 +336,53 @@ async fn check_github_release(app: &AppHandle) {
     }
 }
 
+/// The release page to open: the API's html_url if it's one of this repo's
+/// release pages, else the releases list.
+fn release_page(html_url: Option<&str>) -> String {
+    match html_url {
+        Some(u) if u.starts_with(&format!("{RELEASES_PAGE}/")) && !u.contains("..") => u.to_owned(),
+        _ => RELEASES_PAGE.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_pages() {
+        for (html_url, want) in [
+            (
+                Some("https://github.com/nanaaikinson/switchboard/releases/tag/v0.2.0"),
+                "https://github.com/nanaaikinson/switchboard/releases/tag/v0.2.0",
+            ),
+            (Some("https://evil.example/switchboard/releases/tag/v9"), RELEASES_PAGE),
+            (
+                Some("http://github.com/nanaaikinson/switchboard/releases/tag/v0.2.0"),
+                RELEASES_PAGE,
+            ),
+            (
+                Some("https://github.com/nanaaikinson/switchboard-evil/releases/x"),
+                RELEASES_PAGE,
+            ),
+            (
+                Some("https://github.com/nanaaikinson/switchboard/releases"),
+                RELEASES_PAGE,
+            ),
+            (
+                Some("https://github.com/nanaaikinson/switchboard/releases/../../other/repo"),
+                RELEASES_PAGE,
+            ),
+            (
+                Some("https://github.com.evil.example/nanaaikinson/switchboard/releases/x"),
+                RELEASES_PAGE,
+            ),
+            (Some("file:///etc/passwd"), RELEASES_PAGE),
+            (None, RELEASES_PAGE),
+        ] {
+            assert_eq!(release_page(html_url), want, "{html_url:?}");
+        }
+    }
 
     #[test]
     fn quoting() {

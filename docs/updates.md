@@ -103,6 +103,24 @@ The same `sb.json` is published to both channels, each copy signed for its own c
 Tauri target (`darwin-aarch64`, `darwin-x86_64`, `windows-x86_64`), plus
 `rollout_percent`.
 
+Tauri checks each bundle's signature, but takes the version to install from the
+manifest, and Tauri's bundle signatures don't name a version. So each tray manifest is
+signed too, as `tray/<channel>.json.minisig`, with the trusted comment
+`switchboard-tray <channel> <version>`, e.g. `switchboard-tray stable 0.3.0`. Before
+**Check for Updates…** installs anything, the tray app:
+
+1. fetches the manifest from its configured endpoint, and its `.minisig`, over HTTPS
+   only (redirects included);
+2. verifies the signature over those exact bytes with the updater public key built into
+   the app (`TAURI_UPDATER_PUBKEY`, the same release key), and requires the trusted
+   comment to name the endpoint's channel and the manifest's `version`. The stable
+   channel may not offer a pre-release;
+3. has Tauri check that same endpoint, and refuses unless Tauri read the same manifest
+   and is about to install exactly the signed version.
+
+So an old, validly signed bundle can't be offered as a newer version. The rollout
+percentage comes from the verified manifest too.
+
 ## Release setup (one time)
 
 1. **Make the release key,** offline, with no password so CI can sign without a
@@ -131,11 +149,13 @@ After that, every release's `publish-updates` job does the following:
 - signs each `sb` archive with the trusted comment above, and uploads the `.minisig`
   files to the release;
 - builds `sb.json` and `tray.json` with `go run ./cmd/sb-manifest`, which verifies every
-  signature against the public key first;
+  signature against the public key first (so the Tauri key must be the release key);
 - copies them to each channel of the updates repository (pre-releases to `beta`, and
   releases to both `stable` and `beta`), signs each `<channel>.json` as
   `sb-manifest <channel> <pub_date>`, and checks the result with
-  `sb-manifest -verify <channel>`, exactly as `sb` will, before committing.
+  `sb-manifest -verify <channel>`, exactly as `sb` will, before committing. Each
+  `tray/<channel>.json` is signed as `switchboard-tray <channel> <version>` and checked
+  with `sb-manifest -tray -verify <channel>`.
 
 Until the variables and secrets exist, the job logs a notice and skips.
 
@@ -155,7 +175,9 @@ minisign -S -s switchboard.key -m stable.json -t "sb-manifest stable $(jq -r .pu
 go run ./cmd/sb-manifest -verify stable -key RW... stable.json   # from this repository
 ```
 
-Commit both files. Clients pick it up on their next check. To stop a bad release, set
+For `tray/<channel>.json`, sign with `-t "switchboard-tray <channel> <version>"` and
+check with `sb-manifest -tray -verify <channel>`. Commit both files. Clients pick it up
+on their next check. To stop a bad release, set
 it to 0 the same way. Installs that already updated can run `sb rollback`.
 
 ## Testing against a local manifest

@@ -5,6 +5,7 @@
 mod actions;
 mod daemon;
 mod rollout;
+mod signed_manifest;
 mod version;
 
 use std::sync::Mutex;

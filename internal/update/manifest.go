@@ -83,6 +83,17 @@ func ManifestComment(channel, pubDate string) string {
 	return "sb-manifest " + channel + " " + pubDate
 }
 
+// TrayManifestComment is the trusted comment of the tray app's manifest
+// signature (tray/<channel>.json.minisig), e.g.
+// "switchboard-tray stable 0.3.0", with the manifest's version as written.
+// Tauri checks each bundle's signature but takes the version from the
+// manifest, so the tray app checks this before installing anything, or an
+// old signed bundle could be offered as a newer version. app/tray's
+// src/signed_manifest.rs must agree.
+func TrayManifestComment(channel, version string) string {
+	return "switchboard-tray " + channel + " " + version
+}
+
 // VerifyManifest checks a channel manifest before any of it is trusted: sig,
 // its .minisig file, must verify over exactly body with pk, and its trusted
 // comment must be ManifestComment(channel, the manifest's pub_date). The

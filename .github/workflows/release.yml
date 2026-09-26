@@ -490,7 +490,14 @@ jobs:
             # then checked exactly as sb will (docs/updates.md).
             minisign -S -s "$key" -m "updates/$c.json" -x "updates/$c.json.minisig" -t "sb-manifest $c $pub_date" < /dev/null
             go run ./cmd/sb-manifest -verify "$c" "updates/$c.json"
-            if [ -f tray.json ]; then cp tray.json "updates/tray/$c.json"; fi
+            if [ -f tray.json ]; then
+              cp tray.json "updates/tray/$c.json"
+              # Tauri doesn't check the manifest, only the bundles, so the
+              # tray app checks this signature before it installs anything.
+              minisign -S -s "$key" -m "updates/tray/$c.json" -x "updates/tray/$c.json.minisig" \
+                -t "switchboard-tray $c $(jq -r .version tray.json)" < /dev/null
+              go run ./cmd/sb-manifest -tray -verify "$c" "updates/tray/$c.json"
+            fi
           done
           cd updates
           git config user.name "github-actions[bot]"
