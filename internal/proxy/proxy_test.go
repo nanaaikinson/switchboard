@@ -31,6 +31,8 @@ func upstream(t *testing.T, id string) (*httptest.Server, int) {
 			"xff":  r.Header.Get("X-Forwarded-For"),
 			"xfh":  r.Header.Get("X-Forwarded-Host"),
 			"xfp":  r.Header.Get("X-Forwarded-Proto"),
+			"fwd":  r.Header.Get("Forwarded"),
+			"xrip": r.Header.Get("X-Real-IP"),
 		})
 	}))
 	t.Cleanup(srv.Close)
@@ -152,12 +154,13 @@ func TestForwardedHeaders(t *testing.T) {
 	_, port := upstream(t, "app")
 	_, fr := front(t, config.Route{Name: "myapp.test", Port: port})
 	_, body := get(t, fr, "myapp.test",
-		"X-Forwarded-For", "6.6.6.6", "X-Forwarded-Host", "spoofed", "X-Forwarded-Proto", "https")
+		"X-Forwarded-For", "6.6.6.6", "X-Forwarded-Host", "spoofed", "X-Forwarded-Proto", "https",
+		"Forwarded", "for=6.6.6.6;proto=https", "X-Real-IP", "6.6.6.6")
 	var got map[string]string
 	if err := json.Unmarshal([]byte(body), &got); err != nil {
 		t.Fatalf("decode %q: %v", body, err)
 	}
-	want := map[string]string{"host": "myapp.test", "xff": "127.0.0.1", "xfh": "myapp.test", "xfp": "http"}
+	want := map[string]string{"host": "myapp.test", "xff": "127.0.0.1", "xfh": "myapp.test", "xfp": "http", "fwd": "", "xrip": ""}
 	for k, v := range want {
 		if got[k] != v {
 			t.Errorf("%s = %q, want %q", k, got[k], v)

@@ -179,7 +179,13 @@ func (p *ReverseProxy) newReverseProxy(port int) *httputil.ReverseProxy {
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			pr.Out.Host = pr.In.Host // dev servers build URLs from Host
-			pr.SetXForwarded()       // incoming X-Forwarded-* are dropped first
+			// ReverseProxy drops the client's Forwarded and X-Forwarded-*
+			// before Rewrite, but not X-Real-IP, through which a client could
+			// claim another address. Both are deleted here so that doesn't
+			// depend on the Go version.
+			pr.Out.Header.Del("Forwarded")
+			pr.Out.Header.Del("X-Real-IP")
+			pr.SetXForwarded() // incoming X-Forwarded-* are dropped first
 		},
 		Transport: p.transport,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {

@@ -25,7 +25,8 @@ wildcard are rejected.
 - **Target:** `http://127.0.0.1:<port>`. HTTP proxy environment variables are ignored.
 - **Host header:** the original `Host` is passed through, so dev servers generate
   correct URLs.
-- **Forwarded headers:** any `X-Forwarded-*` headers the client sent are dropped. Then
+- **Forwarded headers:** any `Forwarded`, `X-Real-IP` and `X-Forwarded-*` headers the
+  client sent are dropped, so an app can trust them. Then
   `X-Forwarded-For` (client IP), `X-Forwarded-Host` (original host) and
   `X-Forwarded-Proto` (`http` or `https`) are set.
 - **WebSockets and upgrades:** `Connection: Upgrade` requests are tunnelled both ways.
