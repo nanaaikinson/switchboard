@@ -171,7 +171,7 @@ function Install-Sb([bool]$ForEveryone, [bool]$KeepPath) {
 			throw "could not download SHA256SUMS for $version; refusing to install unverified files"
 		}
 
-		Test-SbSignature $base $tmp $version
+		Test-SbSignature -Base $base -Tmp $tmp -Version $version
 
 		$want = $null
 		foreach ($line in Get-Content -LiteralPath "$tmp\SHA256SUMS") {
