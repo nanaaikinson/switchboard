@@ -18,7 +18,7 @@ func (p *Platform) ServeHelper(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s := &posix.Server{Socket: p.o.HelperSocket, UID: p.o.UID, GID: gid, Addrs: p.o.HelperAddrs, DNSAddr: p.o.HelperDNSAddr}
+	s := &posix.Server{Socket: p.o.HelperSocket, UID: p.o.UID, GID: gid, Addrs: p.o.HelperAddrs, DNSAddr: p.o.HelperDNSAddr, Build: p.o.Version}
 	return s.Serve(ctx)
 }
 

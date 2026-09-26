@@ -86,6 +86,10 @@ type Platform interface {
 	PortOwner(ctx context.Context, port int) (string, error)
 }
 
+// Version is the running sb's version; cmd/sb sets it. The helper reports
+// it, and 'sb doctor' checks the helper runs the same one.
+var Version = "dev"
+
 // Options identifies the user Switchboard is installed for.
 type Options struct {
 	UID    int

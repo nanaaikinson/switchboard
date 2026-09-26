@@ -7,6 +7,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/nanaaikinson/switchboard/internal/platform"
 )
 
 // version is set at build time with -ldflags "-X main.version=v1.2.3".
@@ -20,6 +22,7 @@ func main() {
 }
 
 func newRootCmd() *cobra.Command {
+	platform.Version = version // the helper reports it; doctor compares
 	root := &cobra.Command{
 		Use:   "sb",
 		Short: "Map local ports to trusted HTTPS names",

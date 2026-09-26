@@ -41,6 +41,9 @@ type Options struct {
 	User   string // login name; "" looks it up from UID
 	Home   string
 	SbPath string
+	// Version is this sb's version: the helper reports it, and diagnostics
+	// compare the helper's with it. "" skips the comparison.
+	Version string
 
 	Root          string                                            // prefix for every system path; "" is /
 	Run           func(name string, args ...string) ([]byte, error) // nil runs the command

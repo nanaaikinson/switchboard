@@ -155,7 +155,9 @@ https URL (http only for localhost), and so must every redirect.`,
 			fmt.Fprintf(out, "Updated %s from %s to %s. The previous version is %s; undo with: sb rollback\n",
 				exe, version, c.Manifest.Version, update.OldPath(exe))
 			restartDaemon(cmd)
-			fmt.Fprintln(out, "The privileged helper keeps its own copy of sb; re-run 'sb setup' if the release notes say to.")
+			if runtime.GOOS != "windows" {
+				fmt.Fprintln(out, "The privileged helper runs its own copy of sb, which is not updated: run 'sb setup' to update it too, so the privileged part gets this version's fixes.")
+			}
 			return nil
 		},
 	}

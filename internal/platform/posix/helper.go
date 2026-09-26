@@ -35,7 +35,7 @@ const helperIOTimeout = 5 * time.Second
 // Request is one line of JSON from the daemon to the helper.
 type Request struct {
 	Version int      `json:"version"`
-	Op      string   `json:"op"`              // "listeners", "dns" or "hosts"
+	Op      string   `json:"op"`              // "listeners", "dns", "hosts" or "version"
 	Names   []string `json:"names,omitempty"` // for "hosts"
 }
 
@@ -43,6 +43,7 @@ type Request struct {
 // the sockets travel alongside it as SCM_RIGHTS.
 type Response struct {
 	Version int      `json:"version"`
+	Build   string   `json:"build,omitempty"` // for "version": the helper's sb version
 	Addrs   []string `json:"addrs,omitempty"`
 	Error   string   `json:"error,omitempty"`
 }
@@ -61,6 +62,8 @@ type Server struct {
 	DNSAddr string
 	// Hosts rewrites the hosts-file entries; nil refuses the "hosts" op.
 	Hosts func(names []string) error
+	// Build is the helper's sb version, for the "version" op.
+	Build string
 }
 
 // Serve runs until ctx is done. It listens on a socket that only the user can
@@ -131,6 +134,8 @@ func (s *Server) handle(c *net.UnixConn, ports, dns *socketSet) {
 		if err != nil {
 			resp.Error = err.Error()
 		}
+	case req.Op == "version":
+		resp.Build = s.Build
 	case req.Op == "hosts" && s.Hosts != nil:
 		if err := s.Hosts(req.Names); err != nil {
 			resp.Error = err.Error()
@@ -287,6 +292,43 @@ func dial(ctx context.Context, socket string, req Request) (*net.UnixConn, error
 		return nil, fmt.Errorf("helper: send request: %w", err)
 	}
 	return c, nil
+}
+
+// HelperBuild asks the helper which version of sb it runs. It returns an
+// error matching ErrOldHelper for a helper from before it could say.
+func HelperBuild(ctx context.Context, socket string) (string, error) {
+	c, err := dial(ctx, socket, Request{Op: "version"})
+	if err != nil {
+		return "", err
+	}
+	defer c.Close()
+	var resp Response
+	if err := json.NewDecoder(io.LimitReader(c, maxRequest)).Decode(&resp); err != nil {
+		return "", fmt.Errorf("helper: decode response: %w", err)
+	}
+	switch {
+	case strings.HasPrefix(resp.Error, "unknown op "):
+		return "", ErrOldHelper
+	case resp.Error != "":
+		return "", fmt.Errorf("helper: %s", resp.Error)
+	}
+	return resp.Build, nil
+}
+
+// CheckHelperBuild reports, with a fix, if the helper doesn't run sb want.
+// The root helper runs its own copy of sb, which only 'sb setup' updates, so
+// after an upgrade it can miss fixes to the privileged part.
+func CheckHelperBuild(ctx context.Context, socket, want string) error {
+	build, err := HelperBuild(ctx, socket)
+	switch {
+	case errors.Is(err, ErrOldHelper):
+		return WithFix("Re-run 'sb setup' to update it.", "running, but from an earlier version of sb than %s", want)
+	case err != nil:
+		return err
+	case build != want:
+		return WithFix("Re-run 'sb setup' to update it.", "running sb %s, but this is sb %s", build, want)
+	}
+	return nil
 }
 
 // SyncHosts asks the helper to set the hosts-file entries to names.

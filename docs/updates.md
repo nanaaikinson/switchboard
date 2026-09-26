@@ -59,7 +59,8 @@ The tray app updates itself from **Check for Updates…** in its menu.
 8. **Restart the daemon's service:** `launchctl kickstart -k` on macOS,
    `systemctl --user restart` on Linux, and stopping and starting the logon task on
    Windows. The privileged helper keeps its own root-owned
-   copy of `sb`. Re-run `sb setup` when a release's notes say the helper changed.
+   copy of `sb`, which this doesn't replace: `sb self-update` says to run `sb setup`,
+   and `sb doctor` fails the helper check until the helper runs the same version.
 
 If anything fails before step 7, nothing on disk changes except `update-state.json`. A
 build without a release key (`internal/update.ReleaseKey` empty) refuses to

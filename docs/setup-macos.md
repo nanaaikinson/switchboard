@@ -92,6 +92,10 @@ tools also write `nameserver 127.0.0.1` files, and those are never removed. If
 - **`sb setup` refuses to run as root,** so it always installs for the real user.
 - **Protocol versions are checked.** If the helper and daemon disagree, the error says
   to re-run `sb setup`.
+- **An out-of-date helper is flagged.** The helper runs its own copy of `sb`, which
+  `sb self-update` doesn't replace. It reports its version, and `sb doctor` fails the
+  helper check until `sb setup` has updated it, so fixes to the privileged part aren't
+  silently missed.
 
 ## How the daemon gets ports 80 and 443
 

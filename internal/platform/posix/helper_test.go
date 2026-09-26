@@ -243,3 +243,22 @@ func TestHelperPassesDNSSockets(t *testing.T) {
 		}
 	}
 }
+
+func TestHelperBuild(t *testing.T) {
+	dir, err := os.MkdirTemp("", "sbh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	s := serveHelper(t, &Server{Socket: filepath.Join(dir, "helper.sock"), UID: os.Getuid(), GID: os.Getgid(), Build: "v1.2.0"})
+	if build, err := HelperBuild(context.Background(), s.Socket); err != nil || build != "v1.2.0" {
+		t.Errorf("HelperBuild = %q, %v", build, err)
+	}
+	if err := CheckHelperBuild(context.Background(), s.Socket, "v1.2.0"); err != nil {
+		t.Errorf("same version: %v", err)
+	}
+	var f interface{ Fix() string }
+	if err := CheckHelperBuild(context.Background(), s.Socket, "v1.3.0"); !errors.As(err, &f) || !strings.Contains(err.Error(), "running sb v1.2.0, but this is sb v1.3.0") || !strings.Contains(f.Fix(), "sb setup") {
+		t.Errorf("other version: %v", err)
+	}
+}
