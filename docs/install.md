@@ -9,6 +9,16 @@ brew install nanaaikinson/tap/sb
 This installs the prebuilt `sb` from the latest stable release. Then run `sb setup`.
 Pre-releases are never published to the tap. Update with `brew upgrade sb`.
 
+For the menu-bar app instead, which bundles `sb` and links it the same way:
+
+```bash
+brew install --cask nanaaikinson/tap/switchboard
+```
+
+Open it once to run setup. It updates itself (**Check for Updates…**). The two casks
+conflict, since both provide `sb`; install one or the other. Run `sb uninstall` before
+`brew uninstall` to undo setup's system changes.
+
 ## macOS and Linux
 
 ```bash

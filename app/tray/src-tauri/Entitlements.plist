@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for Switchboard.app and the sb binary (the
+  sidecar and the standalone release binaries, .github/scripts/macos-sign.sh).
+
+  Deliberately empty: neither needs a hardened-runtime exception.
+  - sb is a static Go binary: no JIT, no unsigned executable memory, no
+    third-party dylibs, no DYLD_* variables.
+  - The app's WKWebView runs JavaScript (and its JIT) in Apple's WebContent
+    process, not ours, so allow-jit is not needed.
+  - The admin dialog is osascript's `do shell script`, handled inside
+    osascript: no Apple Events to other apps (automation.apple-events).
+  - The app isn't sandboxed, so no network or file entitlements.
+  Never add com.apple.security.get-task-allow: notarization rejects it.
+-->
+<plist version="1.0">
+<dict>
+</dict>
+</plist>

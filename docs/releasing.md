@@ -25,9 +25,11 @@ squash merges, the PR title is the commit subject that counts.
 The release workflow:
 
 1. Rejects the tag unless it matches `vMAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]`.
-2. Runs [GoReleaser](https://goreleaser.com) with [.goreleaser.yaml](../.goreleaser.yaml).
-   It cross-compiles `sb` for darwin, linux and windows on amd64 and arm64, with
-   `main.version` set to the tag. It builds:
+2. Runs [GoReleaser](https://goreleaser.com) with [.goreleaser.yaml](../.goreleaser.yaml),
+   on a macOS runner. It cross-compiles `sb` for darwin, linux and windows on amd64 and
+   arm64, with `main.version` set to the tag. A build hook signs and notarizes each
+   darwin binary before it's archived (see [below](#macos-signing-and-notarization)).
+   It builds:
    - `sb_<version>_<os>_<arch>.tar.gz` (`.zip` on Windows), each holding
      `sb_<version>_<os>_<arch>/sb`;
    - `.deb` and `.rpm` packages named `switchboard`, which install `/usr/bin/sb`;
@@ -42,8 +44,9 @@ The release workflow:
    [nanaaikinson/homebrew-tap](https://github.com/nanaaikinson/homebrew-tap), so
    `brew install nanaaikinson/tap/sb` and `brew upgrade sb` get the release. Pre-releases
    never update the cask, and it's skipped while `HOMEBREW_TAP_TOKEN` is unset. The cask
-   installs the prebuilt binary on macOS and Linux. Until the binary is notarized, the
-   cask removes the download's quarantine flag after Homebrew has checked its SHA-256.
+   installs the prebuilt binary on macOS and Linux. If the release was built without
+   the macOS signing secrets, the cask removes the download's quarantine flag after
+   Homebrew has checked its SHA-256, since Gatekeeper would block the unsigned binary.
 4. Signs `SHA256SUMS` with the release key, as `SHA256SUMS.minisig`. Skipped while
    `MINISIGN_SECRET_KEY` is unset.
 5. Publishes signed build provenance for every archive and package (GitHub artifact
@@ -51,7 +54,9 @@ The release workflow:
    does not offer attestations for user-owned private repositories.
 6. Then builds the [tray app](tray.md) on macOS (a universal `.dmg`) and Windows (NSIS
    `.exe` and `.msi`), and uploads them to the same release. They're signed when the
-   signing secrets listed in tray.md are set, and unsigned otherwise.
+   signing secrets below are set, and unsigned otherwise. For a stable release with a
+   notarized `.dmg`, the macOS job also pushes the `switchboard` cask (the app) to the
+   tap: `brew install --cask nanaaikinson/tap/switchboard`.
 7. Signs each `sb` archive with the release key, and publishes the update manifests
    that `sb self-update` and the tray app read (see [updates.md](updates.md)). This is
    skipped until the key and deploy token are configured.
@@ -84,15 +89,98 @@ works without any of them.
 | `UPDATE_ROLLOUT_PERCENT` | variable | Optional staged rollout of updates. | [updates.md](updates.md) |
 | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | secrets | Signing the tray app's updater bundles. | [updates.md](updates.md) |
 | `TAURI_UPDATER_PUBKEY` | variable | The tray app updater's public key. | [updates.md](updates.md) |
-| `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | secrets | Signing and notarizing the macOS tray app. | [tray.md](tray.md) |
+| `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD` | secrets | The Developer ID Application certificate, for signing `sb` and the tray app. | [below](#macos-signing-and-notarization) |
+| `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID`, `APPLE_API_PRIVATE_KEY` | secrets | The App Store Connect API key, for notarizing. | [below](#macos-signing-and-notarization) |
 | `WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD` | secrets | Signing the Windows installers. | [tray.md](tray.md) |
 
 `GITHUB_TOKEN` is provided by Actions; nothing to set.
 
 **Setting up the tap:** create a public repository `nanaaikinson/homebrew-tap` with a
 README, make the token above, and add it as `HOMEBREW_TAP_TOKEN`. The next stable release
-writes `Casks/sb.rb`. While `switchboard` itself is private, `brew install` can't
+writes `Casks/sb.rb`, and `Casks/switchboard.rb` once macOS signing is set up too. While `switchboard` itself is private, `brew install` can't
 download the release assets, so the cask only works once it's public.
+
+## macOS signing and notarization
+
+[macos-sign.sh](../.github/scripts/macos-sign.sh) does the signing, in two jobs that
+run on macOS:
+
+- **release:** `setup` makes a temporary keychain with a random password, imports the
+  certificate into it, and writes the API key to a temporary file. GoReleaser's build
+  hook then signs each darwin `sb` with the hardened runtime and a secure timestamp,
+  and notarizes it with `xcrun notarytool`. A bare binary can't hold a stapled ticket,
+  so Gatekeeper checks it online.
+- **macos:** the same `setup`, then `tauri build` signs the sidecar and the app from
+  that keychain, notarizes the app and staples it, and builds the `.dmg`. The job signs,
+  notarizes and staples the `.dmg`, checks everything with `codesign`, `stapler` and
+  `spctl`, and uploads it.
+
+Both jobs delete the keychain and the key file in a final step that runs even when an
+earlier step fails or the run is cancelled. A rejected notarization fails the job and
+prints Apple's log. The entitlements are in
+[Entitlements.plist](../app/tray/src-tauri/Entitlements.plist) (none are needed).
+
+Set all five secrets, or none: with none, macOS builds are unsigned and the
+`switchboard` cask isn't published; with only some, the release fails and names the
+missing one. You need a paid [Apple Developer Program](https://developer.apple.com/programs/)
+membership, and only its Account Holder can make a Developer ID certificate.
+
+| Secret | Value |
+| --- | --- |
+| `APPLE_CERTIFICATE` | base64 of the Developer ID Application certificate and private key, as a `.p12` |
+| `APPLE_CERTIFICATE_PASSWORD` | the `.p12`'s export password |
+| `APPLE_API_KEY_ID` | the API key's Key ID, e.g. `2X9R4HXF34` |
+| `APPLE_API_ISSUER_ID` | the Issuer ID, a UUID |
+| `APPLE_API_PRIVATE_KEY` | the whole `AuthKey_<KEYID>.p8` file, `-----BEGIN PRIVATE KEY-----` lines included |
+
+The signing identity and team come from the certificate, so there's no secret for them.
+
+**The certificate** (on a Mac, as the Account Holder):
+
+1. In Keychain Access, choose *Keychain Access → Certificate Assistant → Request a
+   Certificate From a Certificate Authority*. Enter your email and name, choose *Saved
+   to disk*, and save the `.certSigningRequest`.
+2. At [developer.apple.com/account](https://developer.apple.com/account), open
+   *Certificates, IDs & Profiles → Certificates* and click **+**. Choose
+   **Developer ID Application**, then the *G2 Sub-CA* profile type, upload the request,
+   and download the `.cer`.
+3. Double-click the `.cer` to add it to your login keychain. Under *My Certificates*,
+   it shows as `Developer ID Application: <name> (<team ID>)` with its private key
+   underneath.
+4. Right-click it, **Export…**, choose *Personal Information Exchange (.p12)*, and set a
+   strong password. That's `APPLE_CERTIFICATE_PASSWORD`.
+5. Base64 it for `APPLE_CERTIFICATE`, then delete the `.p12`:
+
+   ```bash
+   base64 -i DeveloperID.p12 | pbcopy
+   ```
+
+Developer ID certificates last five years. Keep a backup of the `.p12` somewhere safe,
+such as a password manager: Apple limits how many you can make, and apps already signed
+keep working after it expires.
+
+**The API key:**
+
+1. At [App Store Connect](https://appstoreconnect.apple.com), open *Users and Access →
+   Integrations → App Store Connect API*. The first time, the Account Holder clicks
+   *Request Access* and accepts the terms.
+2. Under **Team Keys**, click **+** (*Generate API Key*). Name it, for example
+   `switchboard-notary`, and give it the **Developer** role, the least that can
+   notarize.
+3. **Download** the `AuthKey_<KEYID>.p8`. Apple offers it only once. Its contents are
+   `APPLE_API_PRIVATE_KEY`.
+4. The *Key ID* column gives `APPLE_API_KEY_ID`, and the *Issuer ID* above the table
+   gives `APPLE_API_ISSUER_ID`.
+
+To check the key before a release, run this on your Mac. An empty list means it works:
+
+```bash
+xcrun notarytool history --key AuthKey_KEYID.p8 --key-id KEYID --issuer ISSUER_ID
+```
+
+Revoke the key in the same place if it leaks, and the certificate at
+developer.apple.com (revoking a Developer ID certificate also invalidates everything it
+signed, so contact Apple first unless the key is compromised).
 
 ## Linux packages and systemd
 

@@ -27,10 +27,13 @@ jobs:
     if: ${{ !inputs.skip_ci }}
     uses: ./.github/workflows/ci.yml
 
+  # macOS, so GoReleaser's build hook can sign and notarize the darwin sb
+  # binaries before they're archived and checksummed; the other targets are
+  # cross-compiled as before.
   release:
     needs: ci
     if: ${{ always() && (needs.ci.result == 'success' || needs.ci.result == 'skipped') }}
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     permissions:
       contents: write     # create the release
       id-token: write     # sign build provenance
@@ -54,6 +57,17 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+
+      # A temporary keychain with the Developer ID certificate, and the
+      # notary API key; removed by the last step. See docs/releasing.md.
+      - name: Set up macOS signing
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: sh .github/scripts/macos-sign.sh setup
 
       # Builds the archives, SHA256SUMS and .deb/.rpm packages from
       # .goreleaser.yaml, publishes the GitHub release, and pushes the
@@ -84,7 +98,7 @@ jobs:
             echo "::notice::MINISIGN_SECRET_KEY is not set; SHA256SUMS is not signed."
             exit 0
           fi
-          sudo apt-get install -y -qq minisign
+          brew install --quiet minisign
           key=$(mktemp) && trap 'rm -f "$key"' EXIT
           printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
           minisign -S -s "$key" -m dist/SHA256SUMS -x dist/SHA256SUMS.minisig -t "switchboard $TAG SHA256SUMS" < /dev/null
@@ -96,29 +110,24 @@ jobs:
         with:
           subject-path: "dist/*.tar.gz, dist/*.zip, dist/*.deb, dist/*.rpm"
 
-  # The tray app: a .dmg for macOS, and NSIS + MSI installers for Windows,
-  # attached to the release GoReleaser created. Signing reads only from
-  # repository secrets; without them the builds are unsigned.
-  tray:
+      - name: Remove the signing keychain
+        if: always()
+        run: sh .github/scripts/macos-sign.sh cleanup
+
+  # The tray app for macOS: a universal Switchboard.app, signed with the
+  # hardened runtime (Entitlements.plist) and notarized and stapled by Tauri,
+  # in a .dmg that is signed, notarized and stapled here. Then the
+  # `switchboard` Homebrew cask. Without the signing secrets the build is
+  # unsigned and the cask isn't published.
+  macos:
     needs: release
     if: ${{ always() && needs.release.result == 'success' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            target: universal-apple-darwin
-            bundles: app,dmg # the .app gives the updater's .app.tar.gz
-            dir: src-tauri/target/universal-apple-darwin/release/bundle
-            files: dmg/*.dmg macos/*.app.tar.gz macos/*.app.tar.gz.sig
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            bundles: nsis,msi
-            dir: src-tauri/target/x86_64-pc-windows-msvc/release/bundle
-            files: nsis/*.exe nsis/*.exe.sig msi/*.msi
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     permissions:
       contents: write # upload release assets
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      BUNDLE: src-tauri/target/universal-apple-darwin/release/bundle
     defaults:
       run:
         shell: bash
@@ -135,7 +144,172 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      # Before the keychain exists, so npm install scripts never see it.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set up macOS signing
+        working-directory: .
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: sh .github/scripts/macos-sign.sh setup
+
+      # Tauri signs the sidecar and the app from the keychain identity
+      # (APPLE_SIGNING_IDENTITY), then notarizes the app with notarytool and
+      # the API key (APPLE_API_*), and staples it before making the .dmg.
+      - name: Build the app
+        env:
+          # In-app updates: the release key (see docs/updates.md).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+        run: |
+          version=${TAG#v}
+          config="{\"version\": \"${version%%-*}\"}"
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && [ -n "$UPDATER_PUBKEY" ]; then
+            config="{\"version\": \"${version%%-*}\", \"bundle\": {\"createUpdaterArtifacts\": true}, \"plugins\": {\"updater\": {\"pubkey\": \"$UPDATER_PUBKEY\"}}}"
+          fi
+          # app gives the updater's .app.tar.gz
+          npx tauri build --target universal-apple-darwin --bundles app,dmg --config "$config"
+
+      - name: Sign, notarize and staple the .dmg
+        run: |
+          if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            echo "::notice::The macOS signing secrets are not set; the .dmg is unsigned."
+            exit 0
+          fi
+          app="$BUNDLE/macos/Switchboard.app"
+          dmg=$(echo "$BUNDLE"/dmg/*.dmg)
+          codesign --force --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dmg"
+          sh ../../.github/scripts/macos-sign.sh notarize "$dmg"
+
+          # Check what Gatekeeper will: every executable signed with the
+          # hardened runtime, the app's ticket stapled, both accepted.
+          codesign --verify --deep --strict --verbose=2 "$app"
+          for exe in "$app"/Contents/MacOS/*; do
+            codesign -d --verbose=2 "$exe" 2>&1 | grep -q 'flags=.*runtime' ||
+              { echo "::error::$exe is not signed with the hardened runtime"; exit 1; }
+          done
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Updater bundles and .sig files exist only when the updater key is set.
+        run: |
+          cd "$BUNDLE"
+          shopt -s nullglob
+          files=(dmg/*.dmg macos/*.app.tar.gz macos/*.app.tar.gz.sig)
+          gh release upload "$TAG" "${files[@]}" --clobber
+
+      # `brew install --cask nanaaikinson/tap/switchboard`. Stable releases
+      # only, and only notarized builds: Gatekeeper blocks an unsigned app.
+      - name: Publish the switchboard cask
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ] || [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN or the macOS signing secrets are not set; skipping the switchboard cask."
+            exit 0
+          fi
+          case "$TAG" in *-*) echo "Pre-release: the cask is not updated."; exit 0 ;; esac
+          version=${TAG#v}
+          dmg=$(echo "$BUNDLE"/dmg/*.dmg)
+          v='#{version}'
+          file=$(basename "$dmg")
+          file=${file//"$version"/$v} # Switchboard_#{version}_universal.dmg
+          sha=$(shasum -a 256 "$dmg" | cut -d' ' -f1)
+          git clone -q "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${OWNER}/homebrew-tap.git" "$RUNNER_TEMP/tap"
+          mkdir -p "$RUNNER_TEMP/tap/Casks"
+          cask="$RUNNER_TEMP/tap/Casks/switchboard.rb"
+          cat > "$cask" <<EOF
+          # This file is written by the Switchboard release workflow. DO NOT EDIT.
+          cask "switchboard" do
+            version "$version"
+            sha256 "$sha"
+
+            url "https://github.com/$REPO/releases/download/v#{version}/$file"
+            name "Switchboard"
+            desc "Menu-bar app that maps local ports to trusted HTTPS names"
+            homepage "https://github.com/$REPO"
+
+            auto_updates true
+            conflicts_with cask: "sb"
+            depends_on macos: ">= :ventura"
+
+            app "Switchboard.app"
+            binary "#{appdir}/Switchboard.app/Contents/MacOS/sb"
+
+            uninstall quit: "dev.switchboard.tray"
+
+            zap trash: [
+              "~/Library/Application Support/dev.switchboard.tray",
+              "~/Library/Caches/dev.switchboard.tray",
+              "~/Library/LaunchAgents/Switchboard.plist",
+              "~/Library/WebKit/dev.switchboard.tray",
+            ]
+
+            caveats <<~EOS
+              Open Switchboard once to set up .test names and trusted HTTPS.
+              Run 'sb uninstall' before uninstalling to undo those system changes.
+            EOS
+          end
+          EOF
+          ruby -c "$cask" > /dev/null
+          cd "$RUNNER_TEMP/tap"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/switchboard.rb
+          git commit -q -m "switchboard $TAG" || { echo "The cask is up to date."; exit 0; }
+          git push -q
+
+      - name: Remove the signing keychain
+        if: always()
+        working-directory: .
+        run: sh .github/scripts/macos-sign.sh cleanup
+
+  # The tray app for Windows: NSIS + MSI installers, signed when the Windows
+  # signing secrets are set.
+  windows:
+    needs: release
+    if: ${{ always() && needs.release.result == 'success' }}
+    runs-on: windows-latest
+    permissions:
+      contents: write # upload release assets
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      BUNDLE: src-tauri/target/x86_64-pc-windows-msvc/release/bundle
+    defaults:
+      run:
+        shell: bash
+        working-directory: app/tray
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0 # the sidecar's version comes from git describe
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
 
       - uses: actions/setup-node@v6
         with:
@@ -143,14 +317,6 @@ jobs:
 
       - name: Build the tray app
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
-          # macOS signing and notarization (tauri reads these directly).
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           # Windows signing (src-tauri/scripts/sign-windows.ps1).
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
@@ -166,17 +332,16 @@ jobs:
           if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] && [ -n "$UPDATER_PUBKEY" ]; then
             config="{\"version\": \"${version%%-*}\", \"bundle\": {\"createUpdaterArtifacts\": true}, \"plugins\": {\"updater\": {\"pubkey\": \"$UPDATER_PUBKEY\"}}}"
           fi
-          npx tauri build --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}" --config "$config"
+          npx tauri build --target x86_64-pc-windows-msvc --bundles nsis,msi --config "$config"
 
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag || github.ref_name }}
         # Updater bundles and .sig files exist only when the signing key is set.
         run: |
-          cd "${{ matrix.dir }}"
+          cd "$BUNDLE"
           shopt -s nullglob
-          files=(${{ matrix.files }})
+          files=(nsis/*.exe nsis/*.exe.sig msi/*.msi)
           gh release upload "$TAG" "${files[@]}" --clobber
 
   # Signs the sb archives, builds the update manifests (checking every
@@ -184,7 +349,7 @@ jobs:
   # repo, which sb self-update and the tray app read. Skipped until the
   # release key and deploy token are configured; see docs/updates.md.
   publish-updates:
-    needs: [release, tray]
+    needs: [release, macos, windows]
     if: ${{ always() && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:

@@ -71,21 +71,30 @@ them to the GitHub release. See [releasing.md](releasing.md).
 
 ### Signing
 
-Set these as repository secrets (for CI) or environment variables (locally). Without
-them, builds are unsigned.
+Release builds are signed in CI from repository secrets: see
+[releasing.md → macOS signing and notarization](releasing.md#macos-signing-and-notarization).
+Without them, builds are unsigned.
+
+On macOS, the app and its `sb` sidecar are signed with the hardened runtime and
+[Entitlements.plist](../app/tray/src-tauri/Entitlements.plist), which is empty on
+purpose: neither needs a runtime exception (the file says why). To sign and notarize a
+local build, with a Developer ID Application identity in your login keychain:
 
 | Variable | For |
 | --- | --- |
-| `APPLE_CERTIFICATE` | base64 of the Developer ID Application `.p12` |
-| `APPLE_CERTIFICATE_PASSWORD` | its password |
-| `APPLE_SIGNING_IDENTITY` | e.g. `Developer ID Application: Name (TEAMID)` |
-| `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | notarization; the password is an app-specific password |
+| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: Name (TEAMID)`, or its SHA-1 hash |
+| `APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_KEY_PATH` | notarization: the App Store Connect API key's issuer ID, key ID, and the path to its `.p8` |
+
+Tauri notarizes the `.app` with `notarytool` and staples it. It doesn't notarize the
+`.dmg`; CI does that separately.
+
+On Windows:
+
+| Variable | For |
+| --- | --- |
 | `WINDOWS_CERTIFICATE` | base64 of the code-signing `.pfx` ([sign-windows.ps1](../app/tray/src-tauri/scripts/sign-windows.ps1)) |
 | `WINDOWS_CERTIFICATE_PASSWORD` | its password |
 | `WINDOWS_TIMESTAMP_URL` | optional; default `http://timestamp.digicert.com` |
-
-Tauri signs the bundled `sb` sidecar too, with the hardened runtime, as notarization
-requires.
 
 ## Manual QA on macOS
 
@@ -158,6 +167,7 @@ this on your main machine: setup changes system files.
 
 **Signed builds only**
 19. With the signing secrets set, the release `.dmg` opens with no Gatekeeper warning.
+    `xcrun stapler validate` passes on both the `.dmg` and the app.
     `spctl -a -vv /Applications/Switchboard.app` says "accepted, source=Notarized
     Developer ID", and `codesign -dv --verbose=2 …/Contents/MacOS/sb` shows the same
     team and the hardened runtime.

@@ -19,6 +19,13 @@ builds:
       - -X github.com/nanaaikinson/switchboard/internal/update.ReleaseKey={{ index .Env "SB_UPDATE_PUBLIC_KEY" }}
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
+    # Signs and notarizes the darwin binaries before they're archived, so
+    # SHA256SUMS and the cask cover the signed files. A no-op for other
+    # targets, and while the macOS signing secrets are unset.
+    hooks:
+      post:
+        - cmd: sh .github/scripts/macos-sign.sh binary {{ .Os }} "{{ .Path }}"
+          output: true
 
 archives:
   - id: sb
@@ -80,14 +87,20 @@ homebrew_casks:
       email: 41898282+github-actions[bot]@users.noreply.github.com
     commit_msg_template: "sb {{ .Tag }}"
     skip_upload: '{{ if index .Env "HOMEBREW_TAP_TOKEN" }}auto{{ else }}true{{ end }}'
-    # The binary isn't notarized yet, so Gatekeeper would block it; brew
-    # has already checked the download against the cask's SHA-256.
+    # The switchboard cask (the tray app) links the same sb.
+    conflicts:
+      - cask: switchboard
+    # An unsigned build (the macOS signing secrets unset) would be blocked
+    # by Gatekeeper, so drop its quarantine flag; brew has already checked
+    # the download against the cask's SHA-256. Notarized builds keep it.
     hooks:
       post:
         install: |
+          {{- if not (index .Env "APPLE_SIGNING_IDENTITY") }}
           if OS.mac?
             system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/sb"]
           end
+          {{- end }}
 
 # Release notes, grouped by conventional-commit type. autotag.yml picks the
 # version from the same commit types.

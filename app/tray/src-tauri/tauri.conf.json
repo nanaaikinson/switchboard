@@ -39,6 +39,7 @@
     "macOS": {
       "minimumSystemVersion": "13.0",
       "hardenedRuntime": true,
+      "entitlements": "Entitlements.plist",
       "signingIdentity": null,
       "dmg": {
         "appPosition": {
