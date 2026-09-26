@@ -80,5 +80,5 @@ go proxy.Serve(ctx, p, lns)   // graceful shutdown when ctx is done
 _ = p.SetRoutes(newRoutes)
 ```
 
-HTTP to HTTPS redirects (`redirect_https`) are not applied yet. They arrive with TLS
-in v0.2.
+Plain-HTTP requests for a route with `redirect_https` get a `307` to the same URL over
+HTTPS, while the HTTPS listener is up (`proxy.RedirectHTTPS`). It's on by default.

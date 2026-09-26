@@ -1,5 +1,9 @@
 # Installing sb
 
+New to Switchboard? [Getting started](getting-started.md) is the short version of this
+page. The install script is the only method that works for pre-releases; Homebrew,
+Scoop and winget only get stable releases.
+
 ## Homebrew (macOS and Linux)
 
 ```bash
@@ -43,11 +47,6 @@ included, so the script itself can't be fetched over plain HTTP.
    isn't installed (the error says how to get it). `SB_INSECURE_SKIP_SIGNATURE=1`
    installs without `minisign`, with a warning; it never skips a signature that
    `minisign` found invalid.
-
-   **The release key doesn't exist yet,** so the script has none, and this step only
-   prints a warning that the release is not signature-verified. Until then only the
-   checksum (step 4) protects the download, which catches corruption but not a
-   tampered release.
 4. Checks the archive's SHA-256 against `SHA256SUMS`, and refuses to install on a
    mismatch or if the archive isn't listed.
 5. Installs `sb` to `~/.local/bin`. It copies to a temp file next to the target, then
@@ -69,7 +68,10 @@ curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/nanaaiki
 ```
 
 `latest` means the newest release that isn't a pre-release. To install a pre-release
-such as `v0.2.0-rc.1`, set `SB_VERSION`.
+such as `v0.2.0-rc.1`, set `SB_VERSION`. **Until the first stable release, there is no
+`latest`:** set `SB_VERSION` (for example `SB_VERSION=v0.1.0-rc.3`), or the script finds
+nothing to install. Releases before `v0.1.0-rc.3` aren't signed and can't be installed
+with the scripts.
 
 The script only installs the binary. `sb setup` makes the system changes (see
 [setup-macos.md](setup-macos.md) and [setup-linux.md](setup-linux.md)). Re-run `sb setup` after every upgrade so that the
@@ -124,8 +126,7 @@ irm https://raw.githubusercontent.com/nanaaikinson/switchboard/main/install/inst
    forced on 5.1).
 3. Checks `SHA256SUMS.minisig` with `minisign` and the release key, as install.sh does:
    the trusted comment must name this release, and a missing `minisign` is an error
-   unless `SB_INSECURE_SKIP_SIGNATURE=1`. Until the release key exists, it warns that
-   the release is not signature-verified instead.
+   unless `SB_INSECURE_SKIP_SIGNATURE=1`.
 4. Checks the zip's SHA-256 with `Get-FileHash`, refusing on a mismatch or if it isn't
    listed.
 5. Installs `sb.exe` to `%LOCALAPPDATA%\Programs\switchboard`. A running `sb.exe` is
@@ -159,11 +160,9 @@ package manager update with that package manager instead (`brew upgrade sb`, `ap
 
 ## Uninstalling
 
-Run `sb uninstall` to revert `sb setup`. Then delete the binary: `rm ~/.local/bin/sb`,
-or `sudo rm /usr/local/bin/sb` if you used `--global`, or remove the `switchboard`
-package. On Windows, delete `%LOCALAPPDATA%\Programs\switchboard` and remove it from
-your user `PATH` (Settings → System → About → Advanced system settings → Environment
-Variables).
+Run `sb uninstall` first, to revert `sb setup`, then delete `sb` the way you installed
+it. [Uninstalling](uninstall.md) has the steps for each install method, and how to
+check nothing is left.
 
 ## Enabling signature checks (maintainers)
 
