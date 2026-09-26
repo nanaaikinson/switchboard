@@ -50,6 +50,7 @@ pub struct NewRoute {
 }
 
 /// The control socket, `sb.sock` in the config dir.
+#[cfg(any(unix, test))]
 pub fn socket_path() -> PathBuf {
     config_dir().join("sb.sock")
 }
@@ -111,6 +112,7 @@ fn port_suffix(l: &Listener, default: &str) -> String {
 }
 
 /// An error message from the daemon ({"error": "..."}) or the connection.
+#[cfg(any(unix, test))]
 fn api_error(status: u16, body: &[u8]) -> String {
     #[derive(Deserialize)]
     struct E {
@@ -250,6 +252,7 @@ pub use unsupported::*;
 /// Removes complete server-sent events ("...\n\n") from buf and returns their
 /// types. Comments (": keepalive") are dropped; data lines are ignored,
 /// since the tray reloads the status after any event.
+#[cfg(any(unix, test))]
 pub fn drain_event_types(buf: &mut String) -> Vec<String> {
     let mut out = Vec::new();
     while let Some(end) = buf.find("\n\n") {

@@ -149,11 +149,13 @@ fn run_as_admin(cmd: &str, prompt: &str) -> Result<(), String> {
 }
 
 /// s quoted for /bin/sh.
+#[cfg(any(unix, test))]
 pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 /// s as an AppleScript string literal.
+#[cfg(any(target_os = "macos", test))]
 pub fn applescript_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', r"\\").replace('"', "\\\""))
 }
