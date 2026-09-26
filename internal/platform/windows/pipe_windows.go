@@ -40,7 +40,7 @@ func ListenPipe(name string) (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w; is another Switchboard daemon running?", name, err)
 	}
-	return ln, nil
+	return newClosableListener(ln), nil
 }
 
 // whoHolds explains why an existing pipe can't be served: our own daemon
