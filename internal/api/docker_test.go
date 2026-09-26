@@ -1,7 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -185,6 +188,65 @@ func TestDeleteDockerRouteIsConflict(t *testing.T) {
 	Handler(s).ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/routes/web", nil))
 	if rec.Code != http.StatusConflict {
 		t.Errorf("DELETE status %d, want 409", rec.Code)
+	}
+}
+
+// pickyProxy rejects any route table with a route it refuses, as the proxy
+// rejects an invalid table.
+type pickyProxy struct {
+	fakeProxy
+	refuse func(config.Route) bool
+}
+
+func (p *pickyProxy) SetRoutes(rs []config.Route) error {
+	for _, r := range rs {
+		if p.refuse != nil && p.refuse(r) {
+			return fmt.Errorf("proxy: route %q: refused", r.Name)
+		}
+	}
+	return p.fakeProxy.SetRoutes(rs)
+}
+
+// Hostnames never reach the log at info level or above (AGENTS.md); the full
+// reason is in the skipped list instead.
+func TestDockerRejectionLogsNoHostnames(t *testing.T) {
+	tests := []struct {
+		name   string
+		refuse func(config.Route) bool
+		want   []string // in the log
+	}{
+		{"docker routes rejected", func(r config.Route) bool { return r.Name == "secret-app.test" },
+			[]string{"docker routes rejected"}},
+		{"config routes can't be restored either", func(r config.Route) bool { return r.Port == 9000 },
+			[]string{"docker routes rejected", "restore config routes failed"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &pickyProxy{}
+			s := newServiceWith(t, func(o *Options) {
+				o.Proxy = p
+				o.Config.Routes = []config.Route{{Name: "private-config.test", Port: 9000}}
+			})
+			var buf bytes.Buffer
+			old := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+			t.Cleanup(func() { slog.SetDefault(old) })
+
+			p.refuse = tt.refuse
+			s.SetDocker(DockerStatus{Enabled: true, Connected: true}, []DockerRoute{dr("secret-app.test", 8080, "web")})
+			out := buf.String()
+			for _, w := range tt.want {
+				if !strings.Contains(out, w) {
+					t.Errorf("log missing %q:\n%s", w, out)
+				}
+			}
+			if strings.Contains(out, "secret-app") || strings.Contains(out, "private-config") {
+				t.Errorf("hostname logged at info or above:\n%s", out)
+			}
+			if sk := s.Status().Docker.Skipped; len(sk) != 1 || !strings.Contains(sk[0].Reason, "refused") {
+				t.Errorf("skipped = %+v, want the full reason there", sk)
+			}
+		})
 	}
 }
 

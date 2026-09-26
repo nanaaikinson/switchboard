@@ -22,15 +22,18 @@ func (s *Service) SetDocker(st DockerStatus, routes []DockerRoute) {
 	defer s.mu.Unlock()
 	all, active, conflicts := s.merge(s.routes, routes)
 	if err := s.opts.Proxy.SetRoutes(all); err != nil {
-		// Never let container routes break the config routes.
-		slog.Warn("docker routes rejected", "err", err)
+		// Never let container routes break the config routes. The error
+		// names routes, so it's logged at debug only; sb ls shows it.
+		slog.Warn("docker routes rejected; see 'sb ls' for why", "containers", len(routes))
+		slog.Debug("docker routes rejected", "err", err)
 		for _, r := range routes {
 			conflicts = append(conflicts, DockerSkip{Container: r.Container, Reason: err.Error()})
 		}
 		routes, active = nil, nil
 		all, _, _ = s.merge(s.routes, nil)
 		if err := s.opts.Proxy.SetRoutes(all); err != nil {
-			slog.Error("restore config routes", "err", err)
+			slog.Error("restore config routes failed; restart the daemon")
+			slog.Debug("restore config routes", "err", err)
 		}
 	}
 	old := s.active
