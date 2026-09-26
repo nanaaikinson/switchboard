@@ -101,7 +101,8 @@ plain minisign signature file with the trusted comment `sb-manifest <channel> <p
 The same `sb.json` is published to both channels, each copy signed for its own channel.
 
 `tray/stable.json` and `tray/beta.json` are the Tauri updater's static format, keyed by
-Tauri target (`darwin-aarch64`, `darwin-x86_64`, `windows-x86_64`), plus
+Tauri target (`darwin-aarch64`, `darwin-x86_64`; `windows-x86_64` once there's a
+Windows tray app again), plus
 `rollout_percent`.
 
 Tauri checks each bundle's signature, but takes the version to install from the
