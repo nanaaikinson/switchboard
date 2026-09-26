@@ -84,7 +84,7 @@ makes these. A pre-release:
 
 Set these under *Settings → Secrets and variables → Actions*. Never commit their values.
 Each feature that needs one is skipped with a notice until it is set, so a release still
-works without any of them.
+works without any of them. What's still to set up is tracked in [backlog.md](backlog.md).
 
 | Name | Kind | Used for | Where it's described |
 | --- | --- | --- | --- |
@@ -195,7 +195,8 @@ signed, so contact Apple first unless the key is compromised).
 
 Windows releases are **unsigned for now**. Windows SmartScreen warns about the tray
 installers ("Windows protected your PC" → *More info* → *Run anyway*). Scoop ignores
-Authenticode, and winget accepts unsigned portable packages.
+Authenticode, and winget accepts unsigned portable packages. The postponed work is in
+[backlog.md](backlog.md).
 
 What's in place for when a certificate exists:
 
